@@ -1,62 +1,38 @@
-# .cnb.yml — MOS-CMD-CIBUILD-01 WP-C3'''
+# .cnb.yml — MOS-CMD-CIBUILD-01 WP-C3''' (R4修DSL)
 # CNB社区版云原生构建 · 沐宸MOS Dify web镜像流水线
-# 触发=main分支web/变更+手动dispatch双通道
-# Runner: 4核8GB（Dify web Dockerfile NODE_OPTIONS=4GB heap，2C4G堆顶偏紧）
-# 产出=docker buildx构建web镜像 → 推TCR mcmos命名空间
-# 凭据用CNB Secrets注入（TCR永久令牌），不硬编码
+# 语法依据 https://cloud.tencent.com/document/product/1785/116273 + docs.cnb.cool
+# 触发=main分支push事件；Runner=4核8GB（Dify web NODE_OPTIONS=4GB heap）
+# 产出=docker buildx web/Dockerfile → 推TCR mcmos命名空间
+# 凭据用CNB仓库Secrets注入，不硬编码
 
 main:
   push:
-    - paths:
-        - 'web/**'
-        - '.cnb.yml'
-        - 'pnpm-lock.yaml'
-        - 'package.json'
+    - name: build-push-web
+      runner:
+        cpus: 4
+        memory: 8Gi
+      stages:
+        - name: Login TCR
+          script: |
+            docker login ccr.ccs.tencentyun.com \
+              -u "${{ secrets.TCR_USERNAME }}" \
+              -p "${{ secrets.TCR_PASSWORD }}"
 
-workflow_dispatch:
+        - name: Build & Push dify-web
+          script: |
+            # 初始化 buildx builder（CNB runner可能默认只有默认builder，显式建跨架构）
+            docker buildx create --name mos-builder --use 2>/dev/null || true
+            echo "COMMIT_SHA=${{ cnb.sha }}"
 
-runner:
-  cpus: 4
-  memory: 8Gi
+            # 多阶段构建 + 直推 TCR
+            docker buildx build \
+              --platform linux/amd64 \
+              --file web/Dockerfile \
+              --build-arg COMMIT_SHA=${{ cnb.sha }} \
+              --tag ccr.ccs.tencentyun.com/mcmos/dify-web:cloud \
+              --tag ccr.ccs.tencentyun.com/mcmos/dify-web:${{ cnb.sha }} \
+              --push \
+              .
 
-stages:
-  - name: Checkout
-    steps:
-      - checkout
-
-  - name: Docker Build & Push
-    steps:
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to TCR (腾讯云容器镜像服务)
-        uses: docker/login-action@v3
-        with:
-          registry: ccr.ccs.tencentyun.com
-          username: ${{ secrets.TCR_USERNAME }}
-          password: ${{ secrets.TCR_PASSWORD }}
-
-      - name: Extract metadata
-        id: meta
-        run: |
-          echo "image=ccr.ccs.tencentyun.com/mcmos/dify-web" >> "$CNB_OUTPUT_FILE"
-          echo "tag_latest=ccr.ccs.tencentyun.com/mcmos/dify-web:cloud" >> "$CNB_OUTPUT_FILE"
-          echo "tag_sha=ccr.ccs.tencentyun.com/mcmos/dify-web:${{ cnb.sha }}" >> "$CNB_OUTPUT_FILE"
-
-      - name: Build and push dify-web
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: web/Dockerfile
-          push: true
-          platforms: linux/amd64
-          tags: |
-            ccr.ccs.tencentyun.com/mcmos/dify-web:cloud
-            ccr.ccs.tencentyun.com/mcmos/dify-web:${{ cnb.sha }}
-          build-args: |
-            COMMIT_SHA=${{ cnb.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            echo "=== Push OK ==="
+            docker images | head -5
