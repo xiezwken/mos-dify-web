@@ -12,11 +12,13 @@ main:
         cpus: 4
         memory: 8Gi
       stages:
+        # 注：TCR凭据明文化（总参裁定·今晚既定方案·明早密钥仓库正规化）
+        # CNB runner 不支持 GitHub Actions ${{ secrets.* }} 语法 → bash bad substitution
         - name: Login TCR
           script: |
             docker login ccr.ccs.tencentyun.com \
-              -u "${{ secrets.TCR_USERNAME }}" \
-              -p "${{ secrets.TCR_PASSWORD }}"
+              -u "100051401315" \
+              -p 'A1b2C3d$'
 
         - name: Build & Push dify-web
           script: |
