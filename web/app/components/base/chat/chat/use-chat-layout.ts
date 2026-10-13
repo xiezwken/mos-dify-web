@@ -7,6 +7,10 @@ type UseChatLayoutOptions = {
   sidebarCollapseState?: boolean
 }
 
+// Distance from bottom (px) beyond which the "scroll to bottom" button shows.
+// Keep in sync with the判据 threshold (~80px).
+const SCROLL_TO_BOTTOM_THRESHOLD = 80
+
 const setStyleValue = (
   element: HTMLElement,
   property: 'paddingBottom' | 'width',
@@ -17,6 +21,7 @@ const setStyleValue = (
 
 export const useChatLayout = ({ chatList, sidebarCollapseState }: UseChatLayoutOptions) => {
   const [width, setWidth] = useState(0)
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const chatContainerRef = useRef<HTMLDivElement>(null)
   const chatContainerInnerRef = useRef<HTMLDivElement>(null)
   const chatFooterRef = useRef<HTMLDivElement>(null)
@@ -38,6 +43,27 @@ export const useChatLayout = ({ chatList, sidebarCollapseState }: UseChatLayoutO
       })
     }
   }, [chatList.length])
+
+  const updateScrollToBottomVisibility = useCallback((container: HTMLDivElement) => {
+    const distanceToBottom = container.scrollHeight - container.clientHeight - container.scrollTop
+    setShowScrollToBottom(distanceToBottom > SCROLL_TO_BOTTOM_THRESHOLD)
+  }, [])
+
+  // Smoothly scroll the message container to the bottom on user click.
+  const handleClickScrollToBottom = useCallback(() => {
+    const container = chatContainerRef.current
+    if (!container) return
+
+    userScrolledRef.current = false
+    isAutoScrollingRef.current = true
+    container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' })
+
+    // Reset the auto-scrolling guard after the smooth scroll settles.
+    window.setTimeout(() => {
+      isAutoScrollingRef.current = false
+      if (chatContainerRef.current) updateScrollToBottomVisibility(chatContainerRef.current)
+    }, 300)
+  }, [updateScrollToBottomVisibility])
 
   const handleWindowResize = useCallback(() => {
     if (chatContainerRef.current) {
@@ -145,6 +171,7 @@ export const useChatLayout = ({ chatList, sidebarCollapseState }: UseChatLayoutO
       const scrollUpThreshold = 100
 
       userScrolledRef.current = distanceToBottom > scrollUpThreshold
+      setShowScrollToBottom(distanceToBottom > SCROLL_TO_BOTTOM_THRESHOLD)
     }
 
     const container = chatContainerRef.current
@@ -159,10 +186,26 @@ export const useChatLayout = ({ chatList, sidebarCollapseState }: UseChatLayoutO
     if (
       chatList.length <= 1 ||
       (firstMessageId && prevFirstMessageIdRef.current !== firstMessageId)
-    )
+    ) {
       userScrolledRef.current = false
+      setShowScrollToBottom(false)
+    }
     prevFirstMessageIdRef.current = firstMessageId
   }, [chatList])
+
+  // Re-evaluate button visibility when message content grows (streaming) or
+  // when the container size changes, without forcing the scroll position.
+  useEffect(() => {
+    const container = chatContainerRef.current
+    const inner = chatContainerInnerRef.current
+    if (!container || !inner) return
+
+    const observer = new ResizeObserver(() => {
+      updateScrollToBottomVisibility(container)
+    })
+    observer.observe(inner)
+    return () => observer.disconnect()
+  }, [updateScrollToBottomVisibility])
 
   useEffect(() => {
     if (!sidebarCollapseState) {
@@ -173,6 +216,8 @@ export const useChatLayout = ({ chatList, sidebarCollapseState }: UseChatLayoutO
 
   return {
     width,
+    showScrollToBottom,
+    handleClickScrollToBottom,
     chatContainerRef,
     chatContainerInnerRef,
     chatFooterRef,

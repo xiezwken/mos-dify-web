@@ -10,6 +10,9 @@ http_access allow localhost manager
 http_access deny manager
 include /etc/squid/dify_sandbox_proxy.conf
 include /etc/squid/dify_allow_private.conf
+# mos_tools allow - 放行host.docker.internal供Agent工具调用（P0-2收口任务1，必须在deny to_private_networks之前）
+acl mos_tools_hosts dstdomain host.docker.internal
+http_access allow mos_tools_hosts
 http_access deny to_private_networks
 http_access allow allowed_domains
 http_access allow client_localnet

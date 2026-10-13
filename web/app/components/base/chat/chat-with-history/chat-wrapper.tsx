@@ -463,6 +463,7 @@ const ChatWrapper = () => {
         switchSibling={doSwitchSibling}
         inputDisabled={inputDisabled}
         sidebarCollapseState={sidebarCollapseState}
+        showScrollToBottomButton
         renderAgentContent={renderAgentContent}
         questionIcon={
           initUserVariables?.avatar_url ? (

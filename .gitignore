@@ -268,3 +268,13 @@ web/.vitest-reports/
 # dify-agent-runtime
 dify-agent-runtime/bin/
 dify-agent-runtime/.integration-state
+
+# 沐宸MOS本地备份/凭据快照（私有仓不得入）
+*.bak
+*.bak_*
+.env.bak*
+docker/*.bak*
+docker/.env.bak*
+docker/ssrf_proxy/*.bak*
+README_沐宸*.md
+README_第三方*.md

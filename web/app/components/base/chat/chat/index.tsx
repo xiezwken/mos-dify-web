@@ -81,6 +81,7 @@ export type ChatProps = {
   sendOnEnter?: boolean
   speechToTextTarget?: SpeechToTextTarget
   onBeforeSpeechToText?: () => Promise<unknown>
+  showScrollToBottomButton?: boolean
   renderAgentContent?: (props: {
     item: ChatItem
     responding?: boolean
@@ -142,6 +143,7 @@ const Chat: FC<ChatProps> = ({
   sendOnEnter,
   speechToTextTarget,
   onBeforeSpeechToText,
+  showScrollToBottomButton,
   renderAgentContent,
   onHumanInputFormSubmit,
   getHumanInputNodeData,
@@ -164,7 +166,7 @@ const Chat: FC<ChatProps> = ({
       setShowAgentLogModal: state.setShowAgentLogModal,
     })),
   )
-  const { width, chatContainerRef, chatContainerInnerRef, chatFooterRef, chatFooterInnerRef } =
+  const { width, showScrollToBottom, handleClickScrollToBottom, chatContainerRef, chatContainerInnerRef, chatFooterRef, chatFooterInnerRef } =
     useChatLayout({
       chatList,
       sidebarCollapseState,
@@ -267,6 +269,21 @@ const Chat: FC<ChatProps> = ({
               isTryApp && 'px-0',
             )}
           >
+            {showScrollToBottomButton && showScrollToBottom && chatList.length > 1 && (
+              <div
+                data-testid="scroll-to-bottom-button"
+                className="pointer-events-none absolute inset-x-0 bottom-full mb-2 flex justify-end px-1"
+              >
+                <button
+                  type="button"
+                  aria-label="Scroll to bottom"
+                  onClick={handleClickScrollToBottom}
+                  className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-full border-[0.5px] border-components-panel-border bg-components-panel-bg text-text-secondary shadow-md transition-colors hover:bg-components-panel-bg-hover hover:text-text-primary"
+                >
+                  <span aria-hidden className="i-ri-arrow-down-s-line h-4 w-4" />
+                </button>
+              </div>
+            )}
             {!noStopResponding && isResponding && (
               <div data-testid="stop-responding-container" className="mb-2 flex justify-center">
                 <Button

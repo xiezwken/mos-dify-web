@@ -10,6 +10,8 @@ acl dst_agent_backend dstdomain agent_backend
 acl dst_dify_api dstdomain api
 acl path_files urlpath_regex -i ^/files/
 acl path_agent_stub urlpath_regex -i ^/agent-stub/
+# mos_tools allow - 放行host.docker.internal供Agent工具调用（修复批W4，2026-09-24；必须在deny to_private_networks之前）
+acl mos_tools_hosts dstdomain host.docker.internal
 
 http_port ${HTTP_PORT}
 
@@ -17,5 +19,6 @@ http_access deny !Safe_ports
 http_access deny CONNECT !SSL_ports
 http_access allow dst_agent_backend path_agent_stub
 http_access allow dst_dify_api path_files
+http_access allow mos_tools_hosts
 http_access deny to_private_networks
 http_access allow all
