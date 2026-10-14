@@ -1,0 +1,6 @@
+﻿# MOS-CMD-CIBUILD-01 WP-C3''' · TCR credentials (CNB private repo · dify-mos 自身私有)
+TCR_REGISTRY: ccr.ccs.tencentyun.com
+TCR_USERNAME: 100051401315
+TCR_PASSWORD: A1b2C3d$
+TCR_NAMESPACE: mcmos
+TCR_IMAGE: dify-web
