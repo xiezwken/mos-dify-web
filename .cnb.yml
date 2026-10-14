@@ -33,13 +33,18 @@ main:
 
         - name: Build & Push dify-web
           script: |
-            # 注：$CNB_SHA 非 CNB 内置变量（日志 COMMIT_SHA=空 → tag后缀空 → invalid reference format）
-            # CNB 内置的是 $CNB_COMMIT_ID / $CNB_COMMIT_SHA（见 docs.cnb.cool/build/basic-usage/build-in-env）
-            # 用 git rev-parse HEAD 取真实 commit SHA
+            # ===== 资源侦察（首跑零风险实证） =====
+            echo "=== resources ==="
+            free -h
+            nproc
+            cat /sys/fs/cgroup/memory.max 2>/dev/null || echo "memory.max=unlimited"
+            docker info 2>/dev/null | grep -iE "total memory|cpus" || true
+            echo "=================="
+
+            # $CNB_SHA 非 CNB 内置变量 · 用 git rev-parse HEAD 取真实 commit SHA
             COMMIT_SHA=$(git rev-parse HEAD)
-            echo "=== env sanity check ==="
-            docker version --format '{{.Server.Version}}' || echo "NO DOCKER SERVER"
             echo "COMMIT_SHA=$COMMIT_SHA"
+            docker version --format '{{.Server.Version}}'
 
             # 防 runner 10分钟无输出强制关闭（code -1, 14m54s · CNB 默认静默杀）
             # docker buildx 转后台 + 主脚本每 60s echo keepalive 保持输出流不断

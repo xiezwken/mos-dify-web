@@ -18,11 +18,18 @@ const nextConfig: NextConfig = {
     rules: codeInspectorPlugin({
       bundler: 'turbopack',
     }),
+    // Next.js 16 turbopack 内存限 (官方 docs.nextjs.org/docs/app/api-reference/turbopack)
+    // 4C8G runner 扣除OS/overhead后留 ~6G 可用 · node heap 4G + turbopack 3G → 总量受控
+    memoryLimit: 3221225472, // 3GB
   },
   experimental: {
     // TODO: Remove when the `typescript` package can point to TypeScript 7.
     // Next.js resolves that package, while compiler-API consumers still require TypeScript 6.
     useTypeScriptCli: false,
+    // Next.js 15+ 页面生成并行度 (官方 next.config.js staticGeneration* 选项)
+    // 默认每 worker 8 页并行 · 大仓构建时会吃爆内存 → 压到 2
+    staticGenerationMaxConcurrency: 2,
+    staticGenerationMinPagesPerWorker: 50,
   },
   productionBrowserSourceMaps: false, // enable browser source map generation during the production build
   // Configure pageExtensions to include md and mdx

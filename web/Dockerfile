@@ -42,6 +42,8 @@ COPY . .
 WORKDIR /app/web
 ENV NODE_OPTIONS="--max-old-space-size=4096"
 ENV pnpm_config_verify_deps_before_run=false
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV EXPERIMENTAL_ENABLE_VINEXT=false
 RUN pnpm build
 # 注：pnpm build:vinext 已移除（EXPERIMENTAL_ENABLE_VINEXT=false 生产态不激活vinext，A2本地构建验证偏离生产等价）
 
@@ -77,7 +79,7 @@ WORKDIR /app
 COPY --from=builder --chown=dify:dify /app/web/public ./targets/next/web/public
 COPY --from=builder --chown=dify:dify /app/web/.next/standalone ./targets/next/
 COPY --from=builder --chown=dify:dify /app/web/.next/static ./targets/next/web/.next/static
-COPY --from=builder --chown=dify:dify /app/web/dist/standalone ./targets/vinext
+# 注：/app/web/dist/standalone (vinext) 不COPY — build:vinext已从builder阶段移除，EXPERIMENTAL_ENABLE_VINEXT=false生产态不激活vinext
 
 COPY --chown=dify:dify --chmod=755 web/docker/entrypoint.sh ./entrypoint.sh
 
