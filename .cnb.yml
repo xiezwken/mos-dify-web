@@ -35,13 +35,14 @@ main:
           script: |
             # 注：$CNB_SHA 非 CNB 内置变量（日志 COMMIT_SHA=空 → tag后缀空 → invalid reference format）
             # CNB 内置的是 $CNB_COMMIT_ID / $CNB_COMMIT_SHA（见 docs.cnb.cool/build/basic-usage/build-in-env）
-            # 用 git rev-parse HEAD 取真实 commit SHA · 短SHA更清爽
+            # 用 git rev-parse HEAD 取真实 commit SHA
             COMMIT_SHA=$(git rev-parse HEAD)
             echo "=== env sanity check ==="
             docker version --format '{{.Server.Version}}' || echo "NO DOCKER SERVER"
             echo "COMMIT_SHA=$COMMIT_SHA"
 
-            # buildx build 多阶段构建 Dify web/Dockerfile · 直推 TCR
+            # 防 runner 10分钟无输出强制关闭（code -1, 14m54s · CNB 默认静默杀）
+            # docker buildx 转后台 + 主脚本每 60s echo keepalive 保持输出流不断
             docker buildx build \
               --platform linux/amd64 \
               --file web/Dockerfile \
@@ -49,7 +50,19 @@ main:
               --tag "$TCR_REGISTRY/$TCR_NAMESPACE/$TCR_IMAGE:cloud" \
               --tag "$TCR_REGISTRY/$TCR_NAMESPACE/$TCR_IMAGE:$COMMIT_SHA" \
               --push \
-              .
+              . &
+            BUILD_PID=$!
+            while kill -0 $BUILD_PID 2>/dev/null; do
+              echo "[keepalive] building... $(date -u +%Y-%m-%dT%H:%M:%SZ) PID=$BUILD_PID"
+              sleep 60
+            done
+            wait $BUILD_PID
+            BUILD_RC=$?
+            echo "=== buildx exit rc=$BUILD_RC ==="
+            if [ $BUILD_RC -ne 0 ]; then
+              echo "ERROR: docker buildx failed rc=$BUILD_RC"
+              exit $BUILD_RC
+            fi
 
             echo "=== Push OK ==="
             docker images | head -5

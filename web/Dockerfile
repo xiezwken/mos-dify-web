@@ -42,7 +42,8 @@ COPY . .
 WORKDIR /app/web
 ENV NODE_OPTIONS="--max-old-space-size=4096"
 ENV pnpm_config_verify_deps_before_run=false
-RUN pnpm build && pnpm build:vinext
+RUN pnpm build
+# 注：pnpm build:vinext 已移除（EXPERIMENTAL_ENABLE_VINEXT=false 生产态不激活vinext，A2本地构建验证偏离生产等价）
 
 
 # production stage
