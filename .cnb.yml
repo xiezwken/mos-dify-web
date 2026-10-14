@@ -33,17 +33,21 @@ main:
 
         - name: Build & Push dify-web
           script: |
+            # 注：$CNB_SHA 非 CNB 内置变量（日志 COMMIT_SHA=空 → tag后缀空 → invalid reference format）
+            # CNB 内置的是 $CNB_COMMIT_ID / $CNB_COMMIT_SHA（见 docs.cnb.cool/build/basic-usage/build-in-env）
+            # 用 git rev-parse HEAD 取真实 commit SHA · 短SHA更清爽
+            COMMIT_SHA=$(git rev-parse HEAD)
             echo "=== env sanity check ==="
             docker version --format '{{.Server.Version}}' || echo "NO DOCKER SERVER"
-            echo "COMMIT_SHA=$CNB_SHA"
+            echo "COMMIT_SHA=$COMMIT_SHA"
 
             # buildx build 多阶段构建 Dify web/Dockerfile · 直推 TCR
             docker buildx build \
               --platform linux/amd64 \
               --file web/Dockerfile \
-              --build-arg COMMIT_SHA=$CNB_SHA \
+              --build-arg COMMIT_SHA=$COMMIT_SHA \
               --tag "$TCR_REGISTRY/$TCR_NAMESPACE/$TCR_IMAGE:cloud" \
-              --tag "$TCR_REGISTRY/$TCR_NAMESPACE/$TCR_IMAGE:$CNB_SHA" \
+              --tag "$TCR_REGISTRY/$TCR_NAMESPACE/$TCR_IMAGE:$COMMIT_SHA" \
               --push \
               .
 
