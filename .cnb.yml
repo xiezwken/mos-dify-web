@@ -1,0 +1,73 @@
+# .cnb.yml — MOS-CMD-CIBUILD-01 WP-C3''' (R5·两项修复齐发)
+# 根因定版：
+#   ① docker command not found (code 127) → 缺 services: - docker (dind sidecar)
+#   ② bash bad substitution ${{ secrets.* }} → CNB无GHA secrets语法，需密钥仓imports
+# 修复：
+#   ① 加 services: [docker] · dind sidecar 自动挂载 /var/run/docker.sock
+#   ② docker.image = docker:27-cli (自带 docker+buildx CLI · 无需主容器装docker)
+#   ③ TCR凭据 → 密钥文件 .cnb-secrets/envs.yml 放本仓私有目录 (仓私有=密钥受控)
+#      → imports URL 注入 · yml 里零明文 · bash $VAR 展开
+# 语法依据：https://cnb.w3c.cool/build/basic-usage/env/ + build-env/
+# Runner: 4核8GB (Dify web NODE_OPTIONS=4GB heap)
+
+main:
+  push:
+    - name: build-push-web
+      runner:
+        cpus: 4
+        memory: 8Gi
+      docker:
+        # 主构建镜像 · 自带 docker + buildx CLI · 用于 docker buildx 构建 Dify web/Dockerfile
+        image: docker:27-cli
+      services:
+        # ← dind sidecar · 自动挂载 /var/run/docker.sock 到主容器
+        - docker
+      # 密钥文件导入 · URL 指向本仓私有目录 .cnb-secrets/envs.yml (仓私有=受控)
+      imports: https://cnb.cool/mcmos-2026/dify-mos/-/blob/main/.cnb-secrets/envs.yml
+      stages:
+        - name: Login TCR
+          script: |
+            docker login "$TCR_REGISTRY" \
+              -u "$TCR_USERNAME" \
+              -p "$TCR_PASSWORD"
+
+        - name: Build & Push dify-web
+          script: |
+            # ===== 资源侦察（首跑零风险实证） =====
+            echo "=== resources ==="
+            free -h
+            nproc
+            cat /sys/fs/cgroup/memory.max 2>/dev/null || echo "memory.max=unlimited"
+            docker info 2>/dev/null | grep -iE "total memory|cpus" || true
+            echo "=================="
+
+            # $CNB_SHA 非 CNB 内置变量 · 用 git rev-parse HEAD 取真实 commit SHA
+            COMMIT_SHA=$(git rev-parse HEAD)
+            echo "COMMIT_SHA=$COMMIT_SHA"
+            docker version --format '{{.Server.Version}}'
+
+            # 防 runner 10分钟无输出强制关闭（code -1, 14m54s · CNB 默认静默杀）
+            # docker buildx 转后台 + 主脚本每 60s echo keepalive 保持输出流不断
+            docker buildx build \
+              --platform linux/amd64 \
+              --file web/Dockerfile \
+              --build-arg COMMIT_SHA=$COMMIT_SHA \
+              --tag "$TCR_REGISTRY/$TCR_NAMESPACE/$TCR_IMAGE:cloud" \
+              --tag "$TCR_REGISTRY/$TCR_NAMESPACE/$TCR_IMAGE:$COMMIT_SHA" \
+              --push \
+              . &
+            BUILD_PID=$!
+            while kill -0 $BUILD_PID 2>/dev/null; do
+              echo "[keepalive] building... $(date -u +%Y-%m-%dT%H:%M:%SZ) PID=$BUILD_PID"
+              sleep 60
+            done
+            wait $BUILD_PID
+            BUILD_RC=$?
+            echo "=== buildx exit rc=$BUILD_RC ==="
+            if [ $BUILD_RC -ne 0 ]; then
+              echo "ERROR: docker buildx failed rc=$BUILD_RC"
+              exit $BUILD_RC
+            fi
+
+            echo "=== Push OK ==="
+            docker images | head -5
