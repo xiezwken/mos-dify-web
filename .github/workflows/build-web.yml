@@ -1,0 +1,37 @@
+name: build-web-v2
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Docker build (web/Dockerfile, context=repo root)
+        run: |
+          docker build \
+            --progress=plain \
+            -f web/Dockerfile \
+            -t dify-web:1.16.1-mos-paste-md-v2 \
+            .
+
+      - name: Export image to gzipped tar
+        run: |
+          docker save dify-web:1.16.1-mos-paste-md-v2 | gzip > dify-web-v2.tar.gz
+          ls -lh dify-web-v2.tar.gz
+
+      - name: Upload tar artifact (retain 7 days)
+        uses: actions/upload-artifact@v4
+        with:
+          name: dify-web-v2-tar
+          path: dify-web-v2.tar.gz
+          retention-days: 7
