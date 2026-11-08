@@ -19,7 +19,16 @@ import { Infotip } from '@/app/components/base/infotip'
 import VoiceInput from '@/app/components/base/voice-input'
 import { TransferMethod } from '@/types/app'
 import { useCheckInputsForms } from '../check-input-forms-hooks'
-import { deserializeFiles, enqueueSend, serializeFiles } from '../mos-send-queue'
+import {
+  clearSendQueueForConversation,
+  deserializeFiles,
+  enqueueSend,
+  MOS_SEND_QUEUE_EVENT,
+  readSendQueueForConversation,
+  removeSendQueueItemForConversation,
+  serializeFiles,
+  type SendQueueEntry,
+} from '../mos-send-queue'
 import { useTextAreaHeight } from './hooks'
 import Operation from './operation'
 
@@ -117,6 +126,26 @@ const ChatInputArea = ({
   const queryRef = useRef('')
   const voiceInputRef = useRef<HTMLDivElement>(null)
   const voiceInputReturnFocusRef = useRef<HTMLElement | null>(null)
+  // 刀5b：当前会话排队条目（仅用于输入框上方队列条展示）
+  const [queuedItems, setQueuedItems] = useState<SendQueueEntry[]>([])
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const syncQueue = () => setQueuedItems(readSendQueueForConversation(conversationId || ''))
+    syncQueue()
+    window.addEventListener(MOS_SEND_QUEUE_EVENT, syncQueue)
+    window.addEventListener('storage', syncQueue)
+    return () => {
+      window.removeEventListener(MOS_SEND_QUEUE_EVENT, syncQueue)
+      window.removeEventListener('storage', syncQueue)
+    }
+  }, [conversationId])
+  const handleRemoveQueuedItem = (index: number) => {
+    setQueuedItems(removeSendQueueItemForConversation(conversationId || '', index))
+  }
+  const handleClearQueuedItems = () => {
+    clearSendQueueForConversation(conversationId || '')
+    setQueuedItems(readSendQueueForConversation(conversationId || ''))
+  }
   const voiceInputCompletedRef = useRef(false)
   // 刀4：未发送草稿按会话持久化（新会话未注册前用 mos_draft_new）
   const draftKey = `mos_draft_${conversationId || 'new'}`
@@ -393,6 +422,37 @@ const ChatInputArea = ({
           disabled && 'pointer-events-none border-components-panel-border opacity-50 shadow-none',
         )}
       >
+        {queuedItems.length > 0 && (
+          <div className="mx-2.25 mt-2.25 rounded-lg border border-components-panel-border-subtle bg-util-colors-indigo-indigo-50 px-2.5 py-2">
+            <div className="flex items-center justify-between body-xs-medium text-text-secondary">
+              <span>{`排队 ${queuedItems.length} 条`}</span>
+              <button
+                type="button"
+                className="cursor-pointer body-xs-medium text-text-accent hover:underline"
+                onClick={handleClearQueuedItems}
+              >
+                一键清空
+              </button>
+            </div>
+            <ul className="mt-1 space-y-1">
+              {queuedItems.map((item, index) => (
+                <li key={`${index}-${item.content.slice(0, 8)}`} className="flex items-start gap-2">
+                  <span className="min-w-0 flex-1 break-all body-xs-regular text-text-secondary">
+                    {item.content.length > 20 ? `${item.content.slice(0, 20)}…` : item.content}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="删除排队消息"
+                    className="shrink-0 cursor-pointer body-xs-medium text-text-accent hover:underline"
+                    onClick={() => handleRemoveQueuedItem(index)}
+                  >
+                    删除
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <div className="px-2.25 pt-2.25">
           <FileListInChatInput fileConfig={visionConfig!} />
         </div>

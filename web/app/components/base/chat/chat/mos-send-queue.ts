@@ -2,6 +2,7 @@ import type { FileEntity } from '../../file-uploader/types'
 import { TransferMethod } from '@/types/app'
 
 const QUEUE_KEY = 'mos_send_queue'
+export const MOS_SEND_QUEUE_EVENT = 'mos-send-queue-change'
 
 export type SerializedFile = {
   fileId: string
@@ -65,6 +66,41 @@ const writeSendQueue = (queue: SendQueueEntry[]) => {
   catch {
     // 本地存储不可用时静默降级，不阻断发送
   }
+  window.dispatchEvent(new CustomEvent(MOS_SEND_QUEUE_EVENT))
+}
+
+const matchesConversation = (entry: SendQueueEntry, conversationId: string) =>
+  entry.conversationId === (conversationId || '') || entry.conversationId === ''
+
+export const readSendQueueForConversation = (conversationId: string): SendQueueEntry[] =>
+  readSendQueue().filter(entry => matchesConversation(entry, conversationId))
+
+// 刀5b：按当前会话过滤后的局部序号删除单条（其余会话条目不动）
+export const removeSendQueueItemForConversation = (
+  conversationId: string,
+  localIndex: number,
+): SendQueueEntry[] => {
+  const queue = readSendQueue()
+  const current = conversationId || ''
+  const globalIndexes: number[] = []
+  queue.forEach((entry, index) => {
+    if (matchesConversation(entry, current)) globalIndexes.push(index)
+  })
+  const globalIndex = globalIndexes[localIndex]
+  if (globalIndex >= 0 && globalIndex !== undefined) {
+    queue.splice(globalIndex, 1)
+    writeSendQueue(queue)
+  }
+  return queue.filter(entry => matchesConversation(entry, current))
+}
+
+export const clearSendQueueForConversation = (conversationId: string): number => {
+  const current = conversationId || ''
+  const queue = readSendQueue()
+  const remaining = queue.filter(entry => !matchesConversation(entry, current))
+  const cleared = queue.length - remaining.length
+  if (cleared > 0) writeSendQueue(remaining)
+  return cleared
 }
 
 export const enqueueSend = (entry: SendQueueEntry): SendQueueEntry[] => {
