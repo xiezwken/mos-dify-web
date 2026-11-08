@@ -1,4 +1,4 @@
-name: build-web-v4
+name: build-web-v5
 
 on:
   push:
@@ -25,20 +25,20 @@ jobs:
           docker build \
             --progress=plain \
             -f web/Dockerfile \
-            -t dify-web:1.16.1-mos-ui-v4 \
-            -t ghcr.io/${{ github.repository_owner }}/dify-web:1.16.1-mos-ui-v4 \
+            -t dify-web:1.16.1-mos-ui-v5 \
+            -t ghcr.io/${{ github.repository_owner }}/dify-web:1.16.1-mos-ui-v5 \
             .
 
       - name: Export image to gzipped tar
         run: |
-          docker save dify-web:1.16.1-mos-ui-v4 | gzip > dify-web-v4.tar.gz
-          ls -lh dify-web-v4.tar.gz
+          docker save dify-web:1.16.1-mos-ui-v5 | gzip > dify-web-v5.tar.gz
+          ls -lh dify-web-v5.tar.gz
 
       - name: Upload tar artifact (retain 7 days)
         uses: actions/upload-artifact@v4
         with:
-          name: dify-web-v4-tar
-          path: dify-web-v4.tar.gz
+          name: dify-web-v5-tar
+          path: dify-web-v5.tar.gz
           retention-days: 7
 
       - name: Login to GHCR
@@ -50,4 +50,4 @@ jobs:
 
       - name: Push image to GHCR
         run: |
-          docker push ghcr.io/${{ github.repository_owner }}/dify-web:1.16.1-mos-ui-v4
+          docker push ghcr.io/${{ github.repository_owner }}/dify-web:1.16.1-mos-ui-v5

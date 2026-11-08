@@ -34,6 +34,26 @@ import Operation from './operation'
 
 type SendAcceptance = void | boolean | Promise<void | boolean>
 
+// 刀5c：队列摘要渲染——URL 开头显示为「链接×N：/<路径尾段>…」，普通文本维持前 20 字
+function summarizeQueueContent(content: string) {
+  const text = (content || '').trim()
+  if (/^https?:\/\//i.test(text)) {
+    const urls = text.match(/https?:\/\/[^\s]+/gi) || []
+    const count = Math.max(urls.length, 1)
+    let tail = ''
+    try {
+      const parsed = new URL(urls[0])
+      tail = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : `/${parsed.hostname}`
+    }
+    catch {
+      tail = ''
+    }
+    if (tail.length > 60) tail = `${tail.slice(0, 60)}…`
+    return { label: `链接×${count}：${tail}…`, isLink: true }
+  }
+  return { label: text.length > 20 ? `${text.slice(0, 20)}…` : text, isLink: false }
+}
+
 function isMicrophonePermissionDenied(error: unknown) {
   return error instanceof DOMException && error.name === 'NotAllowedError'
 }
@@ -128,8 +148,11 @@ const ChatInputArea = ({
   const voiceInputReturnFocusRef = useRef<HTMLElement | null>(null)
   // 刀5b：当前会话排队条目（仅用于输入框上方队列条展示）
   const [queuedItems, setQueuedItems] = useState<SendQueueEntry[]>([])
+  // 刀5c：点击摘要就地展开全文；键用条目内容，删除其它条目不影响展开态
+  const [expandedQueueItem, setExpandedQueueItem] = useState<string | null>(null)
   useEffect(() => {
     if (typeof window === 'undefined') return
+    setExpandedQueueItem(null)
     const syncQueue = () => setQueuedItems(readSendQueueForConversation(conversationId || ''))
     syncQueue()
     window.addEventListener(MOS_SEND_QUEUE_EVENT, syncQueue)
@@ -435,21 +458,44 @@ const ChatInputArea = ({
               </button>
             </div>
             <ul className="mt-1 space-y-1">
-              {queuedItems.map((item, index) => (
-                <li key={`${index}-${item.content.slice(0, 8)}`} className="flex items-start gap-2">
-                  <span className="min-w-0 flex-1 break-all body-xs-regular text-text-secondary">
-                    {item.content.length > 20 ? `${item.content.slice(0, 20)}…` : item.content}
-                  </span>
-                  <button
-                    type="button"
-                    aria-label="删除排队消息"
-                    className="shrink-0 cursor-pointer body-xs-medium text-text-accent hover:underline"
-                    onClick={() => handleRemoveQueuedItem(index)}
-                  >
-                    删除
-                  </button>
-                </li>
-              ))}
+              {queuedItems.map((item, index) => {
+                const summary = summarizeQueueContent(item.content)
+                const isExpanded = expandedQueueItem === item.content
+                return (
+                  <li key={`${index}-${item.content.slice(0, 8)}`} className="flex items-start gap-2">
+                    <div
+                      className="min-w-0 flex-1 cursor-pointer"
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={isExpanded}
+                      onClick={() => setExpandedQueueItem(isExpanded ? null : item.content)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          setExpandedQueueItem(isExpanded ? null : item.content)
+                        }
+                      }}
+                    >
+                      <span className={cn('break-all body-xs-regular', summary.isLink ? 'text-text-accent' : 'text-text-secondary')}>
+                        {summary.label}
+                      </span>
+                      {isExpanded && (
+                        <div className="mt-1 rounded-md bg-components-panel-bg px-2 py-1 break-all whitespace-pre-wrap body-xs-regular text-text-primary">
+                          {item.content}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      aria-label="删除排队消息"
+                      className="shrink-0 cursor-pointer body-xs-medium text-text-accent hover:underline"
+                      onClick={() => handleRemoveQueuedItem(index)}
+                    >
+                      删除
+                    </button>
+                  </li>
+                )
+              })}
             </ul>
           </div>
         )}
