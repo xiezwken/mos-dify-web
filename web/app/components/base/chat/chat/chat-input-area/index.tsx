@@ -8,7 +8,7 @@ import { cn } from '@langgenius/dify-ui/cn'
 import { toast } from '@langgenius/dify-ui/toast'
 import { noop } from 'es-toolkit/function'
 import { decode } from 'html-entities'
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import Textarea from 'react-textarea-autosize'
 import FeatureBar from '@/app/components/base/features/new-feature-panel/feature-bar'
@@ -19,6 +19,7 @@ import { Infotip } from '@/app/components/base/infotip'
 import VoiceInput from '@/app/components/base/voice-input'
 import { TransferMethod } from '@/types/app'
 import { useCheckInputsForms } from '../check-input-forms-hooks'
+import { deserializeFiles, enqueueSend, serializeFiles } from '../mos-send-queue'
 import { useTextAreaHeight } from './hooks'
 import Operation from './operation'
 
@@ -46,6 +47,7 @@ type ChatInputAreaProps = {
   inputsForm?: InputForm[]
   theme?: Theme | null
   isResponding?: boolean
+  conversationId?: string
   disabled?: boolean
   sendButtonLabel?: string
   sendButtonLoading?: boolean
@@ -78,6 +80,7 @@ const ChatInputArea = ({
   inputsForm = [],
   theme,
   isResponding,
+  conversationId,
   disabled,
   sendButtonLabel,
   sendButtonLoading,
@@ -115,29 +118,98 @@ const ChatInputArea = ({
   const voiceInputRef = useRef<HTMLDivElement>(null)
   const voiceInputReturnFocusRef = useRef<HTMLElement | null>(null)
   const voiceInputCompletedRef = useRef(false)
+  // 刀4：未发送草稿按会话持久化（新会话未注册前用 mos_draft_new）
+  const draftKey = `mos_draft_${conversationId || 'new'}`
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const persistDraft = useCallback(() => {
+    if (typeof window === 'undefined') return
+    if (draftTimerRef.current) {
+      clearTimeout(draftTimerRef.current)
+      draftTimerRef.current = null
+    }
+    const text = queryRef.current
+    const files = filesStore.getState().files
+    if (!text.trim() && files.length === 0) {
+      window.localStorage.removeItem(draftKey)
+      return
+    }
+    try {
+      window.localStorage.setItem(
+        draftKey,
+        JSON.stringify({ text, files: serializeFiles(files), savedAt: Date.now() }),
+      )
+    }
+    catch {
+      // 存储不可用时静默降级
+    }
+  }, [draftKey, filesStore])
+  const schedulePersistDraft = useCallback(() => {
+    if (typeof window === 'undefined') return
+    if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
+    draftTimerRef.current = setTimeout(persistDraft, 500)
+  }, [persistDraft])
+  const clearDraft = useCallback(() => {
+    if (typeof window === 'undefined') return
+    if (draftTimerRef.current) {
+      clearTimeout(draftTimerRef.current)
+      draftTimerRef.current = null
+    }
+    window.localStorage.removeItem(draftKey)
+  }, [draftKey])
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const raw = window.localStorage.getItem(draftKey)
+    if (raw) {
+      try {
+        const draft = JSON.parse(raw)
+        if (!queryRef.current && filesStore.getState().files.length === 0) {
+          if (typeof draft?.text === 'string' && draft.text) {
+            queryRef.current = draft.text
+            setQuery(draft.text)
+            setTimeout(handleTextareaResize, 0)
+          }
+          if (Array.isArray(draft?.files) && draft.files.length)
+            filesStore.getState().setFiles(deserializeFiles(draft.files))
+        }
+      }
+      catch {
+        // 草稿损坏时直接忽略
+      }
+    }
+    // 切换会话/卸载前落盘（刀4 写入点二）
+    return persistDraft
+  }, [draftKey, filesStore, handleTextareaResize, persistDraft])
+  useEffect(() => {
+    const unsubscribe = filesStore.subscribe(schedulePersistDraft)
+    return unsubscribe
+  }, [filesStore, schedulePersistDraft])
+  useEffect(() => {
+    const handleBeforeUnload = () => persistDraft()
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [persistDraft])
   const handleQueryChange = useCallback(
     (value: string) => {
       queryRef.current = value
       setQuery(value)
       setTimeout(handleTextareaResize, 0)
+      schedulePersistDraft()
     },
-    [handleTextareaResize],
+    [handleTextareaResize, schedulePersistDraft],
   )
   const resetAcceptedMessage = useCallback(
     (acceptedQuery: string, acceptedFiles: ReturnType<typeof filesStore.getState>['files']) => {
       const { files, setFiles } = filesStore.getState()
       if (queryRef.current === acceptedQuery) handleQueryChange('')
       if (files === acceptedFiles) setFiles([])
+      // 刀4：消息发出后清除该会话草稿
+      clearDraft()
     },
-    [filesStore, handleQueryChange],
+    [filesStore, handleQueryChange, clearDraft],
   )
   const handleSend = () => {
     if (!canSend) return
 
-    if (isResponding) {
-      toast.info(t(($) => $['errorMessage.waitForResponse'], { ns: 'appDebug' }))
-      return
-    }
     if (onSend) {
       const { files } = filesStore.getState()
       if (
@@ -146,19 +218,31 @@ const ChatInputArea = ({
         toast.info(t(($) => $['errorMessage.waitForFileUpload'], { ns: 'appDebug' }))
         return
       }
-      if (checkInputsForm(inputs, inputsForm)) {
-        const sendResult = onSend(query, files) as SendAcceptance
-        if (sendResult instanceof Promise) {
-          sendResult
-            .then((accepted) => {
-              if (accepted !== false) resetAcceptedMessage(query, files)
-            })
-            .catch(noop)
-          return
-        }
-
-        if (sendResult !== false) resetAcceptedMessage(query, files)
+      if (!checkInputsForm(inputs, inputsForm)) return
+      // 刀5：在飞时点发送改为入队，不再拦截
+      if (isResponding) {
+        enqueueSend({
+          content: query,
+          files: serializeFiles(files),
+          conversationId: conversationId || '',
+        })
+        toast.info('已排队，回复完成后自动发送')
+        handleQueryChange('')
+        filesStore.getState().setFiles([])
+        clearDraft()
+        return
       }
+      const sendResult = onSend(query, files) as SendAcceptance
+      if (sendResult instanceof Promise) {
+        sendResult
+          .then((accepted) => {
+            if (accepted !== false) resetAcceptedMessage(query, files)
+          })
+          .catch(noop)
+        return
+      }
+
+      if (sendResult !== false) resetAcceptedMessage(query, files)
     }
   }
   const handleCompositionStart = () => {
