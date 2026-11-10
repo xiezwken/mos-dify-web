@@ -31,7 +31,6 @@ export type ChatProps = {
   chatList: ChatItem[]
   config?: ChatConfig
   isResponding?: boolean
-  conversationId?: string
   noStopResponding?: boolean
   onStopResponding?: () => void
   noChatInput?: boolean
@@ -105,7 +104,6 @@ const Chat: FC<ChatProps> = ({
   onRegenerate,
   chatList,
   isResponding,
-  conversationId,
   noStopResponding,
   onStopResponding,
   noChatInput,
@@ -339,7 +337,6 @@ const Chat: FC<ChatProps> = ({
                 inputsForm={inputsForm}
                 theme={theme}
                 isResponding={isResponding}
-                conversationId={conversationId}
                 readonly={readonly}
                 sendButtonLabel={sendButtonLabel}
                 sendButtonLoading={sendButtonLoading}
