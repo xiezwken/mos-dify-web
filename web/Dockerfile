@@ -33,7 +33,6 @@ RUN corepack install
 # Install workspace dependencies for the Docker build environment.
 # MOS 2026-10-21: registry.npmjs.org 在构建网络下 ETIMEDOUT，改用 npmmirror 镜像源
 RUN pnpm config set registry https://registry.npmmirror.com
-ENV npm_config_fetch_timeout=600000
 RUN pnpm install --frozen-lockfile --ignore-scripts
 
 # build resources
@@ -43,7 +42,7 @@ COPY --from=packages /app/ .
 COPY . .
 
 WORKDIR /app/web
-ENV NODE_OPTIONS="--max-old-space-size=2048"
+ENV NODE_OPTIONS="--max-old-space-size=4096"
 ENV pnpm_config_verify_deps_before_run=false
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV EXPERIMENTAL_ENABLE_VINEXT=false

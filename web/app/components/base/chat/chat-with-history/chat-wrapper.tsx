@@ -3,9 +3,8 @@ import type { SpeechToTextTarget } from '../../voice-input/types'
 import type { ChatConfig, ChatItem, ChatItemInTree, OnSend } from '../types'
 import { Avatar } from '@langgenius/dify-ui/avatar'
 import { cn } from '@langgenius/dify-ui/cn'
-import { toast } from '@langgenius/dify-ui/toast'
 import { RiArrowDownSLine, RiArrowUpSLine } from '@remixicon/react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { trackEvent } from '@/app/components/base/amplitude'
 import AnswerIcon from '@/app/components/base/answer-icon'
@@ -28,7 +27,6 @@ import { formatBooleanInputs } from '@/utils/model-config'
 import Chat from '../chat'
 import { useChat } from '../chat/hooks'
 import { getInFlightByServerId } from '../chat/in-flight-store'
-import { clearSendQueue, deserializeFiles, dequeueForConversation } from '../chat/mos-send-queue'
 import { getLastAnswer, isValidGeneratedAnswer } from '../utils'
 import { useChatWithHistoryContext } from './context'
 
@@ -260,32 +258,6 @@ const ChatWrapper = () => {
     ],
   )
 
-  // 刀5：当前流完成后 1s（≥1s 且 ≤5s）按序自动发出排队消息
-  const doSendRef = useRef(doSend)
-  const conversationIdRef = useRef(currentConversationId)
-  useEffect(() => {
-    doSendRef.current = doSend
-  }, [doSend])
-  useEffect(() => {
-    conversationIdRef.current = currentConversationId
-  }, [currentConversationId])
-  const prevRespondingRef = useRef(respondingState)
-  useEffect(() => {
-    const wasResponding = prevRespondingRef.current
-    prevRespondingRef.current = respondingState
-    if (!wasResponding || respondingState) return
-    const timer = setTimeout(() => {
-      const entry = dequeueForConversation(conversationIdRef.current || '')
-      if (entry) doSendRef.current(entry.content, deserializeFiles(entry.files))
-    }, 1000)
-    return () => clearTimeout(timer)
-  }, [respondingState])
-  const handleStopWithQueue = useCallback(() => {
-    const cleared = clearSendQueue()
-    if (cleared > 0) toast.info(`已清空${cleared}条排队`)
-    handleStop()
-  }, [handleStop])
-
   const doRegenerate = useCallback(
     (chatItem: ChatItem, editedQuestion?: { message: string; files?: FileEntity[] }) => {
       const question = editedQuestion
@@ -481,7 +453,6 @@ const ChatWrapper = () => {
         speechToTextTarget={speechToTextTarget}
         chatList={messageList}
         isResponding={respondingState}
-        conversationId={currentConversationId || undefined}
         chatContainerInnerClassName={`mx-auto pt-6 w-full max-w-[768px] ${isMobile ? 'px-4' : ''}`}
         chatFooterClassName="pb-4"
         chatFooterInnerClassName={`mx-auto w-full max-w-[768px] ${isMobile ? 'px-2' : 'px-4'}`}
@@ -489,7 +460,7 @@ const ChatWrapper = () => {
         inputs={currentConversationId ? (currentConversationInputs as any) : newConversationInputs}
         inputsForm={inputsForms}
         onRegenerate={doRegenerate}
-        onStopResponding={handleStopWithQueue}
+        onStopResponding={handleStop}
         onHumanInputFormSubmit={handleSubmitHumanInputForm}
         chatNode={
           <>
