@@ -120,6 +120,24 @@ export const enqueueSend = (entry: SendQueueEntry): SendQueueEntry[] => {
 }
 
 /**
+ * D6：新会话首条消息入队时 conversationId 为空；会话 id 一旦可用就回填，
+ * 避免“空会话 id 条目”被其它会话的补扫误发（B1 实测缺陷）。
+ */
+export const adoptSendQueueEntries = (conversationId: string): number => {
+  if (!conversationId) return 0
+  const queue = readSendQueue()
+  let adopted = 0
+  queue.forEach((entry) => {
+    if (!entry.conversationId) {
+      entry.conversationId = conversationId
+      adopted += 1
+    }
+  })
+  if (adopted > 0) writeSendQueue(queue)
+  return adopted
+}
+
+/**
  * D6：只读取不删除——发送确认成功后才由 removeSendQueueEntry 删除。
  * 失败退避期（retryAfter 未到）内的条目跳过，等下一次触发重试。
  */

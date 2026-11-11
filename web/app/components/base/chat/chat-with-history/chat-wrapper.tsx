@@ -28,6 +28,7 @@ import Chat from '../chat'
 import { useChat } from '../chat/hooks'
 import { getInFlightByServerId } from '../chat/in-flight-store'
 import {
+  adoptSendQueueEntries,
   deserializeFiles,
   markSendQueueEntryFailed,
   peekSendQueueForConversation,
@@ -35,6 +36,9 @@ import {
 } from '../chat/mos-send-queue'
 import { getLastAnswer, isValidGeneratedAnswer } from '../utils'
 import { useChatWithHistoryContext } from './context'
+
+// D6：整页加载后的首次挂载只做一次“空会话 id 条目归位”，此后会话切换不再抢他会话的空 id 条目
+let d6BootQueueScanned = false
 
 const ChatWrapper = () => {
   const { t } = useTranslation()
@@ -248,7 +252,13 @@ const ChatWrapper = () => {
           fetchSuggestedQuestions(responseItemId, appSourceType, appId),
         onConversationComplete: isHistoryConversation ? undefined : handleNewConversationCompleted,
         // P-1：新会话首条消息拿到 id 时立即登记侧边栏条目
-        onConversationStarted: isHistoryConversation ? undefined : handleConversationStarted,
+        // D6：同时把本会话“空 conversationId”的排队条目回填为真实 id，避免被其它会话补扫误发
+        onConversationStarted: isHistoryConversation
+          ? undefined
+          : (cid: string) => {
+              adoptSendQueueEntries(cid)
+              handleConversationStarted(cid)
+            },
         isPublicAPI: appSourceType === AppSourceType.webApp,
       })
       const appMode = isNewAgent ? 'agent-v2' : appData?.mode
@@ -288,12 +298,19 @@ const ChatWrapper = () => {
   useEffect(() => {
     respondingRef.current = respondingState
   }, [respondingState])
-  const drainSendQueue = useCallback(() => {
+  const drainSendQueue = useCallback((trigger: 'edge' | 'mount' = 'edge') => {
     if (typeof window === 'undefined') return
+    const currentId = conversationIdRef.current || ''
+    // D6：新会话首包拿到 server id 之前不发——否则会新建一个错误会话（B1 实测回放）
+    if (!currentId) return
     // 防重入：运行中（responding）不补发；同一时刻只允许一个 drain 在途
     if (respondingRef.current || drainingRef.current) return
-    const entry = peekSendQueueForConversation(conversationIdRef.current || '')
+    // P-1 在飞托管：该会话仍有流在跑（含切走后台续跑）时不补发
+    if (getInFlightByServerId(currentId)?.isResponding) return
+    const entry = peekSendQueueForConversation(currentId)
     if (!entry) return
+    // 挂载/回页补扫只认已回填会话 id 的条目；空 id 条目只由本实例的响应下降沿消费，防跨会话误发
+    if (!entry.conversationId && trigger === 'mount') return
     drainingRef.current = true
     // 先占位：doSend 内部 handleSend 会同步置 responding=true，避免同 tick 多触发器重复消费
     respondingRef.current = true
@@ -341,11 +358,16 @@ const ChatWrapper = () => {
 
   // 触发二：挂载补扫（刷新/remount 后无下降沿）+ 可见性恢复补扫；responding 中由 drain 内部拦截
   useEffect(() => {
+    const boot = !d6BootQueueScanned
+    d6BootQueueScanned = true
+    const currentId = conversationIdRef.current || ''
+    // 刷新/首次加载：把“新会话首包前入队”的空 id 条目归到当前恢复的会话（C2 场景）
+    if (boot && currentId) adoptSendQueueEntries(currentId)
     const mountTimer = setTimeout(() => {
-      drainSendQueue()
-    }, 0)
+      drainSendQueue('mount')
+    }, 800)
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') drainSendQueue()
+      if (document.visibilityState === 'visible') drainSendQueue('mount')
     }
     document.addEventListener('visibilitychange', handleVisibilityChange)
     return () => {
