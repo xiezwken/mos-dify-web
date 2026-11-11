@@ -39,6 +39,8 @@ import { useChatWithHistoryContext } from './context'
 
 // D6：整页加载后的首次挂载只做一次“空会话 id 条目归位”，此后会话切换不再抢他会话的空 id 条目
 let d6BootQueueScanned = false
+// D6：整页加载时刻——仅首屏 15s 内允许把刷新前遗留的空 id 条目发到“新会话空白页”
+const d6BootAt = Date.now()
 
 const ChatWrapper = () => {
   const { t } = useTranslation()
@@ -301,16 +303,19 @@ const ChatWrapper = () => {
   const drainSendQueue = useCallback((trigger: 'edge' | 'mount' = 'edge') => {
     if (typeof window === 'undefined') return
     const currentId = conversationIdRef.current || ''
-    // D6：新会话首包拿到 server id 之前不发——否则会新建一个错误会话（B1 实测回放）
-    if (!currentId) return
+    // D6：刷新后 app 尚未恢复会话（空白新会话页）时，允许把刷新前遗留的空 id 条目直接发到新会话（C2），
+    // 但不允许把空 id 条目发进其它既有会话（B1 跨会话串发防线）
+    const bootFreshSend = trigger === 'mount' && !currentId && Date.now() - d6BootAt < 15000
+    // 非首屏且无会话 id：不发——否则会新建一个错误会话
+    if (!currentId && !bootFreshSend) return
     // 防重入：运行中（responding）不补发；同一时刻只允许一个 drain 在途
     if (respondingRef.current || drainingRef.current) return
     // P-1 在飞托管：该会话仍有流在跑（含切走后台续跑）时不补发
-    if (getInFlightByServerId(currentId)?.isResponding) return
+    if (currentId && getInFlightByServerId(currentId)?.isResponding) return
     const entry = peekSendQueueForConversation(currentId)
     if (!entry) return
-    // 挂载/回页补扫只认已回填会话 id 的条目；空 id 条目只由本实例的响应下降沿消费，防跨会话误发
-    if (!entry.conversationId && trigger === 'mount') return
+    // 挂载/回页补扫只认已回填会话 id 的条目；空 id 条目只由本实例的响应下降沿或首屏空白页消费
+    if (!entry.conversationId && trigger === 'mount' && !bootFreshSend) return
     drainingRef.current = true
     // 先占位：doSend 内部 handleSend 会同步置 responding=true，避免同 tick 多触发器重复消费
     respondingRef.current = true
