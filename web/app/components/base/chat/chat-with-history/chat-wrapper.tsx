@@ -1,10 +1,10 @@
 import type { FileEntity } from '../../file-uploader/types'
 import type { SpeechToTextTarget } from '../../voice-input/types'
-import type { ChatConfig, ChatItem, ChatItemInTree, OnSend } from '../types'
+import type { ChatConfig, ChatItem, ChatItemInTree } from '../types'
 import { Avatar } from '@langgenius/dify-ui/avatar'
 import { cn } from '@langgenius/dify-ui/cn'
 import { RiArrowDownSLine, RiArrowUpSLine } from '@remixicon/react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { trackEvent } from '@/app/components/base/amplitude'
 import AnswerIcon from '@/app/components/base/answer-icon'
@@ -27,6 +27,12 @@ import { formatBooleanInputs } from '@/utils/model-config'
 import Chat from '../chat'
 import { useChat } from '../chat/hooks'
 import { getInFlightByServerId } from '../chat/in-flight-store'
+import {
+  deserializeFiles,
+  markSendQueueEntryFailed,
+  peekSendQueueForConversation,
+  removeSendQueueEntry,
+} from '../chat/mos-send-queue'
 import { getLastAnswer, isValidGeneratedAnswer } from '../utils'
 import { useChatWithHistoryContext } from './context'
 
@@ -212,7 +218,15 @@ const ChatWrapper = () => {
     if (!currentConversationId) setHasSent(false)
   }
 
-  const doSend: OnSend = useCallback(
+  // D6：保留 OnSend 调用签名，但把 handleSend 的受理结果（true/false）透出给队列消费
+  type QueueSendResult = Promise<boolean> | void
+  type QueueSend = (
+    message: string,
+    files?: FileEntity[],
+    isRegenerate?: boolean,
+    parentAnswer?: ChatItem | null,
+  ) => QueueSendResult
+  const doSend: QueueSend = useCallback(
     (message, files, isRegenerate = false, parentAnswer: ChatItem | null = null) => {
       if (!currentConversationId) setHasSent(true)
       const data: any = {
@@ -226,7 +240,7 @@ const ChatWrapper = () => {
         parent_message_id: (isRegenerate ? parentAnswer?.id : getLastAnswer(chatList)?.id) || null,
       }
 
-      handleSend(getUrl('chat-messages', appSourceType, appId || ''), data, {
+      const sendResult = handleSend(getUrl('chat-messages', appSourceType, appId || ''), data, {
         onGetConversationMessages: isNewAgent
           ? (conversationId) => fetchChatList(conversationId, appSourceType, appId)
           : undefined,
@@ -240,6 +254,8 @@ const ChatWrapper = () => {
       const appMode = isNewAgent ? 'agent-v2' : appData?.mode
       if (appSourceType === AppSourceType.webApp && appMode)
         trackEvent('webapp_run', { app_mode: appMode })
+      // D6：把 handleSend 的受理结果透出（false＝运行态硬守卫拦截），队列消费据此决定删/留
+      return sendResult
     },
     [
       inputsForms,
@@ -257,6 +273,86 @@ const ChatWrapper = () => {
       appData?.mode,
     ],
   )
+
+  // D6：发送队列消费——双触发（响应下降沿 + 可见性恢复/挂载补扫），先确认后删除
+  const doSendRef = useRef(doSend)
+  const conversationIdRef = useRef(currentConversationId)
+  const respondingRef = useRef(respondingState)
+  const drainingRef = useRef(false)
+  useEffect(() => {
+    doSendRef.current = doSend
+  }, [doSend])
+  useEffect(() => {
+    conversationIdRef.current = currentConversationId
+  }, [currentConversationId])
+  useEffect(() => {
+    respondingRef.current = respondingState
+  }, [respondingState])
+  const drainSendQueue = useCallback(() => {
+    if (typeof window === 'undefined') return
+    // 防重入：运行中（responding）不补发；同一时刻只允许一个 drain 在途
+    if (respondingRef.current || drainingRef.current) return
+    const entry = peekSendQueueForConversation(conversationIdRef.current || '')
+    if (!entry) return
+    drainingRef.current = true
+    // 先占位：doSend 内部 handleSend 会同步置 responding=true，避免同 tick 多触发器重复消费
+    respondingRef.current = true
+    let result: QueueSendResult
+    try {
+      result = doSendRef.current(entry.content, deserializeFiles(entry.files))
+    }
+    catch {
+      respondingRef.current = false
+      drainingRef.current = false
+      markSendQueueEntryFailed(entry)
+      return
+    }
+    // 发送确认成功（handleSend 未被硬守卫拦截）后才移除；失败保留并退避，等下次触发重试
+    Promise.resolve(result)
+      .then((accepted) => {
+        if (accepted === false) {
+          respondingRef.current = false
+          markSendQueueEntryFailed(entry)
+        }
+        else {
+          removeSendQueueEntry(entry.id || '')
+        }
+        drainingRef.current = false
+      })
+      .catch(() => {
+        respondingRef.current = false
+        drainingRef.current = false
+        markSendQueueEntryFailed(entry)
+      })
+  }, [])
+
+  // 触发一：当前流完成后 1s 按序自动发出排队消息（保留刀5原语义）
+  const prevRespondingRef = useRef(respondingState)
+  useEffect(() => {
+    const wasResponding = prevRespondingRef.current
+    prevRespondingRef.current = respondingState
+    respondingRef.current = respondingState
+    if (!wasResponding || respondingState) return
+    const timer = setTimeout(() => {
+      drainSendQueue()
+    }, 1000)
+    return () => clearTimeout(timer)
+  }, [respondingState, drainSendQueue])
+
+  // 触发二：挂载补扫（刷新/remount 后无下降沿）+ 可见性恢复补扫；responding 中由 drain 内部拦截
+  useEffect(() => {
+    const mountTimer = setTimeout(() => {
+      drainSendQueue()
+    }, 0)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') drainSendQueue()
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      clearTimeout(mountTimer)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [drainSendQueue])
 
   const doRegenerate = useCallback(
     (chatItem: ChatItem, editedQuestion?: { message: string; files?: FileEntity[] }) => {
