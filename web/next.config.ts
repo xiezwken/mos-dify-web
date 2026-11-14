@@ -18,6 +18,9 @@ const nextConfig: NextConfig = {
     rules: codeInspectorPlugin({
       bundler: 'turbopack',
     }),
+    // Next.js 16 turbopack 内存限 (官方 docs.nextjs.org/docs/app/api-reference/turbopack)
+    // 4C8G runner 扣除OS/overhead后留 ~6G 可用 · node heap 4G + turbopack 3G → 总量受控
+    memoryLimit: 3221225472, // 3GB
   },
   experimental: {
     // TODO: Remove when the `typescript` package can point to TypeScript 7.
