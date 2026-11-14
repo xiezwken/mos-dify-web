@@ -38,6 +38,10 @@ import {
 import { getLastAnswer, isValidGeneratedAnswer } from '../utils'
 import { useChatWithHistoryContext } from './context'
 
+// FE-STREAM-R1 病②：队列定时兜底自查间隔与响应卡死判据（≥120s 无增量，与切流闸门静默口径对齐）
+const QUEUE_FALLBACK_INTERVAL_MS = 30000
+const QUEUE_STALE_RESPONSE_MS = 120000
+
 const ChatWrapper = () => {
   const { t } = useTranslation()
   const {
@@ -269,31 +273,69 @@ const ChatWrapper = () => {
   // 刀5：当前流完成后 1s（≥1s 且 ≤5s）按序自动发出排队消息
   const doSendRef = useRef(doSend)
   const conversationIdRef = useRef(currentConversationId)
+  const respondingRef = useRef(respondingState)
+  const drainingRef = useRef(false)
+  const lastResponseActivityRef = useRef(Date.now())
   useEffect(() => {
     doSendRef.current = doSend
   }, [doSend])
   useEffect(() => {
     conversationIdRef.current = currentConversationId
   }, [currentConversationId])
+  useEffect(() => {
+    respondingRef.current = respondingState
+    if (respondingState) lastResponseActivityRef.current = Date.now()
+  }, [respondingState, chatList])
+
+  const drainSendQueue = useCallback((trigger: 'edge' | 'interval' = 'edge') => {
+    if (typeof window === 'undefined') return
+    const currentId = conversationIdRef.current || ''
+    // 无会话 id 不发，避免新建错误会话（沿用刀5既有闸）
+    if (!currentId || drainingRef.current) return
+    // 响应卡死：仅定时兜底、同一会话且确无消息增量时，才允许越过 responding／在飞闸；
+    // 正常长响应只要仍有增量即不会被越过
+    const staleResponse = respondingRef.current
+      && Date.now() - lastResponseActivityRef.current >= QUEUE_STALE_RESPONSE_MS
+    const forceStale = trigger === 'interval' && staleResponse
+    if (respondingRef.current && !forceStale) return
+    if (!forceStale && getInFlightByServerId(currentId)?.isResponding) return
+    const entry = dequeueForConversation(currentId)
+    if (!entry) return
+    // 刀5d：附件未就绪时不带病重发，原条目退回队尾等待下一次触发
+    const unsendable = getUnsendableFiles(entry.files)
+    if (unsendable.length > 0) {
+      enqueueSend(entry)
+      toast.info(`排队消息有 ${unsendable.length} 个附件未就绪，已保留在队列中`)
+      return
+    }
+    drainingRef.current = true
+    try {
+      Promise.resolve(doSendRef.current(entry.content, deserializeFiles(entry.files)))
+        .catch(() => {})
+        .finally(() => {
+          drainingRef.current = false
+        })
+    }
+    catch {
+      drainingRef.current = false
+    }
+  }, [])
+
   const prevRespondingRef = useRef(respondingState)
   useEffect(() => {
     const wasResponding = prevRespondingRef.current
     prevRespondingRef.current = respondingState
+    respondingRef.current = respondingState
     if (!wasResponding || respondingState) return
-    const timer = setTimeout(() => {
-      const entry = dequeueForConversation(conversationIdRef.current || '')
-      if (!entry) return
-      // 刀5d：附件未就绪时不带病重发，原条目退回队尾等待下一次触发
-      const unsendable = getUnsendableFiles(entry.files)
-      if (unsendable.length > 0) {
-        enqueueSend(entry)
-        toast.info(`排队消息有 ${unsendable.length} 个附件未就绪，已保留在队列中`)
-        return
-      }
-      doSendRef.current(entry.content, deserializeFiles(entry.files))
-    }, 1000)
+    const timer = setTimeout(() => drainSendQueue('edge'), 1000)
     return () => clearTimeout(timer)
-  }, [respondingState])
+  }, [respondingState, drainSendQueue])
+
+  // FE-STREAM-R1 病②：每 30s 自查一次，事件触发缺失或响应卡死时补发排队消息，解队列死锁
+  useEffect(() => {
+    const timer = setInterval(() => drainSendQueue('interval'), QUEUE_FALLBACK_INTERVAL_MS)
+    return () => clearInterval(timer)
+  }, [drainSendQueue])
   const handleStopWithQueue = useCallback(() => {
     const cleared = clearSendQueue()
     if (cleared > 0) toast.info(`已清空${cleared}条排队`)
