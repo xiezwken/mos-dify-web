@@ -15,7 +15,12 @@ export type SerializedFile = {
   transferMethod?: TransferMethod
   /** 刀5d：远程文件地址，仅 remote_url 需要 */
   url?: string
+  /** 刀5d：图片本地预览（入队后原 File 对象已释放，出队气泡需靠它显示缩略图） */
+  base64Url?: string
 }
+
+/** localStorage 单文件预览上限：约 512KB 原图，超限不落盘以免挤爆队列 */
+const MAX_QUEUE_BASE64_LENGTH = 700000
 
 export type SendQueueEntry = {
   content: string
@@ -36,6 +41,9 @@ export const serializeFiles = (files: FileEntity[]): SerializedFile[] =>
       supportFileType: file.supportFileType || '',
       transferMethod: file.transferMethod,
       url: file.url || '',
+      base64Url: file.base64Url && file.base64Url.length <= MAX_QUEUE_BASE64_LENGTH
+        ? file.base64Url
+        : '',
     }
   })
 
@@ -56,6 +64,7 @@ export const deserializeFiles = (files: SerializedFile[]): FileEntity[] =>
       supportFileType: file.supportFileType || '',
       uploadedId: transferMethod === TransferMethod.local_file ? file.fileId : undefined,
       url: transferMethod === TransferMethod.remote_url ? (file.url || '') : '',
+      base64Url: file.base64Url || '',
     }
   })
 
