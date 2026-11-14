@@ -11,6 +11,10 @@ export type SerializedFile = {
   size: number
   type: string
   supportFileType: string
+  /** 刀5d：随队列落盘的传输方式；旧条目缺省按本地文件处理 */
+  transferMethod?: TransferMethod
+  /** 刀5d：远程文件地址，仅 remote_url 需要 */
+  url?: string
 }
 
 export type SendQueueEntry = {
@@ -27,19 +31,36 @@ export const serializeFiles = (files: FileEntity[]): SerializedFile[] =>
     size: file.size,
     type: file.type,
     supportFileType: file.supportFileType || '',
+    transferMethod: file.transferMethod,
+    url: file.url || '',
   }))
 
+// 刀5d：附件随行。此前误用不存在的 TransferMethod.remote_file，
+// 序列化后 transfer_method 变为 undefined，后端拒绝接收附件。
 export const deserializeFiles = (files: SerializedFile[]): FileEntity[] =>
-  files.map(file => ({
-    id: file.id || file.fileId,
-    name: file.name,
-    size: file.size,
-    type: file.type,
-    progress: 100,
-    transferMethod: TransferMethod.remote_file,
-    supportFileType: file.supportFileType || '',
-    uploadedId: file.fileId,
-  }))
+  files.map((file) => {
+    const transferMethod = file.transferMethod === TransferMethod.remote_url
+      ? TransferMethod.remote_url
+      : TransferMethod.local_file
+    return {
+      id: file.id || file.fileId,
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      progress: 100,
+      transferMethod,
+      supportFileType: file.supportFileType || '',
+      uploadedId: transferMethod === TransferMethod.local_file ? file.fileId : undefined,
+      url: transferMethod === TransferMethod.remote_url ? (file.url || '') : '',
+    }
+  })
+
+/** 刀5d：出队重发前确认附件仍可发送（本地文件需 fileId，远程文件需 url） */
+export const isSerializedFileSendable = (file: SerializedFile): boolean =>
+  file.transferMethod === TransferMethod.remote_url ? !!file.url : !!file.fileId
+
+export const getUnsendableFiles = (files: SerializedFile[]): SerializedFile[] =>
+  files.filter(file => !isSerializedFileSendable(file))
 
 export const readSendQueue = (): SendQueueEntry[] => {
   if (typeof window === 'undefined') return []
@@ -87,7 +108,7 @@ export const removeSendQueueItemForConversation = (
     if (matchesConversation(entry, current)) globalIndexes.push(index)
   })
   const globalIndex = globalIndexes[localIndex]
-  if (globalIndex >= 0 && globalIndex !== undefined) {
+  if (globalIndex !== undefined && globalIndex >= 0) {
     queue.splice(globalIndex, 1)
     writeSendQueue(queue)
   }
@@ -118,7 +139,7 @@ export const dequeueForConversation = (conversationId: string): SendQueueEntry |
   if (index < 0) return null
   const [entry] = queue.splice(index, 1)
   writeSendQueue(queue)
-  return entry
+  return entry ?? null
 }
 
 export const clearSendQueue = (): number => {

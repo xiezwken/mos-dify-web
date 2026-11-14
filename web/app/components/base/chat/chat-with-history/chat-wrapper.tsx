@@ -28,7 +28,13 @@ import { formatBooleanInputs } from '@/utils/model-config'
 import Chat from '../chat'
 import { useChat } from '../chat/hooks'
 import { getInFlightByServerId } from '../chat/in-flight-store'
-import { clearSendQueue, deserializeFiles, dequeueForConversation } from '../chat/mos-send-queue'
+import {
+  clearSendQueue,
+  deserializeFiles,
+  dequeueForConversation,
+  enqueueSend,
+  getUnsendableFiles,
+} from '../chat/mos-send-queue'
 import { getLastAnswer, isValidGeneratedAnswer } from '../utils'
 import { useChatWithHistoryContext } from './context'
 
@@ -276,7 +282,15 @@ const ChatWrapper = () => {
     if (!wasResponding || respondingState) return
     const timer = setTimeout(() => {
       const entry = dequeueForConversation(conversationIdRef.current || '')
-      if (entry) doSendRef.current(entry.content, deserializeFiles(entry.files))
+      if (!entry) return
+      // 刀5d：附件未就绪时不带病重发，原条目退回队尾等待下一次触发
+      const unsendable = getUnsendableFiles(entry.files)
+      if (unsendable.length > 0) {
+        enqueueSend(entry)
+        toast.info(`排队消息有 ${unsendable.length} 个附件未就绪，已保留在队列中`)
+        return
+      }
+      doSendRef.current(entry.content, deserializeFiles(entry.files))
     }, 1000)
     return () => clearTimeout(timer)
   }, [respondingState])

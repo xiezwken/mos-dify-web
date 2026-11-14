@@ -278,7 +278,9 @@ const ChatInputArea = ({
           files: serializeFiles(files),
           conversationId: conversationId || '',
         })
-        toast.info('已排队，回复完成后自动发送')
+        toast.info(files.length > 0
+          ? `已排队（含 ${files.length} 个附件），回复完成后自动发送`
+          : '已排队，回复完成后自动发送')
         handleQueryChange('')
         filesStore.getState().setFiles([])
         clearDraft()
@@ -479,6 +481,14 @@ const ChatInputArea = ({
                       <span className={cn('break-all body-xs-regular', summary.isLink ? 'text-text-accent' : 'text-text-secondary')}>
                         {summary.label}
                       </span>
+                      {item.files.length > 0 && (
+                        <span
+                          className="ml-1 shrink-0 body-xs-medium text-text-accent"
+                          title={item.files.map(file => file.name).join('\n')}
+                        >
+                          {`📎${item.files.length}`}
+                        </span>
+                      )}
                       {isExpanded && (
                         <div className="mt-1 rounded-md bg-components-panel-bg px-2 py-1 break-all whitespace-pre-wrap body-xs-regular text-text-primary">
                           {item.content}
