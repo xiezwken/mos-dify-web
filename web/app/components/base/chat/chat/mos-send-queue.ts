@@ -24,16 +24,20 @@ export type SendQueueEntry = {
 }
 
 export const serializeFiles = (files: FileEntity[]): SerializedFile[] =>
-  files.map(file => ({
-    fileId: file.uploadedId || file.id,
-    id: file.id,
-    name: file.name,
-    size: file.size,
-    type: file.type,
-    supportFileType: file.supportFileType || '',
-    transferMethod: file.transferMethod,
-    url: file.url || '',
-  }))
+  files.map((file) => {
+    const isRemote = file.transferMethod === TransferMethod.remote_url
+    return {
+      // 刀5d：本地附件只认已上传 id，绝不拿本地临时 id 冒充（否则重发必被后端拒绝）
+      fileId: isRemote ? (file.uploadedId || file.id) : (file.uploadedId || ''),
+      id: file.id,
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      supportFileType: file.supportFileType || '',
+      transferMethod: file.transferMethod,
+      url: file.url || '',
+    }
+  })
 
 // 刀5d：附件随行。此前误用不存在的 TransferMethod.remote_file，
 // 序列化后 transfer_method 变为 undefined，后端拒绝接收附件。
