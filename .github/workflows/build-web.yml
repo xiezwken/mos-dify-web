@@ -1,4 +1,4 @@
-name: Build dify-web → GHCR (沐宸MOS CIBUILD-01)
+name: Build dify-web → GHCR (沐宸MOS CIBUILD-01 / v19)
 
 # WP-C3 · 施工席·沐言 · 2026-10-13
 # 用途：GitHub Actions 免费 runner 构建 Dify web 前端镜像，推 GHCR 私有仓
@@ -10,6 +10,7 @@ on:
   push:
     branches:
       - main
+      - mos-ui-v19
     paths:
       - 'web/**'
       - '.github/workflows/build-web.yml'
@@ -51,10 +52,8 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/dify-web
           tags: |
-            type=raw,value=latest
+            type=raw,value=1.16.1-mos-ui-v19
             type=sha,prefix=
-            type=ref,event=branch
-            type=ref,event=pr
 
       - name: Build and push
         uses: docker/build-push-action@v5

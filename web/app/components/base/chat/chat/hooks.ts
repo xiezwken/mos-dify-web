@@ -27,6 +27,17 @@ import { useParams, usePathname } from '@/next/navigation'
 import { sseGet, ssePost } from '@/service/base'
 import { TransferMethod } from '@/types/app'
 import { getThreadMessages } from '../utils'
+import {
+  bindInFlightServerId,
+  createInFlight,
+  getInFlightByLocalKey,
+  getInFlightByServerId,
+  saveInFlightTree,
+  setInFlightResponding,
+  setInFlightStop,
+  setInFlightSuggestedQuestions,
+  subscribeInFlightByServerId,
+} from './in-flight-store'
 import { getProcessedInputs, processOpeningStatement } from './utils'
 
 type GetAbortController = (abortController: AbortController) => void
@@ -66,6 +77,8 @@ type SendCallback = {
     getAbortController: GetAbortController,
   ) => Promise<unknown>
   onConversationComplete?: (conversationId: string, workflowRunId?: string) => void
+  /** P-1：新会话首条消息拿到 conversationId 时触发（早于 onConversationComplete），用于立即登记会话条目 */
+  onConversationStarted?: (conversationId: string) => void
   onUnhandledEvent?: IOtherOptions['onUnhandledEvent']
   onSendSettled?: (hasError?: boolean) => void
   onNotifyError?: IOtherOptions['onNotifyError']
@@ -202,9 +215,19 @@ export const useChat = (
   const { formatTime } = useTimestamp({ timezone: options.timezone })
   const conversationIdRef = useRef(initialConversationId ?? '')
   const initialConversationIdRef = useRef(initialConversationId ?? '')
+  // P-1：切回被托管的在飞会话时，从全局存储 hydrate（仅挂载时读取一次）
+  const [hydratedInFlight] = useState(() =>
+    initialConversationId ? getInFlightByServerId(initialConversationId) : undefined,
+  )
+  const hydrateUnsubRef = useRef<null | (() => void)>(null)
+  // P-1：当前实例正在进行的请求在全局存储中的 localKey；hydrate 时指向被托管记录
+  const inFlightLocalKeyRef = useRef(hydratedInFlight?.localKey ?? '')
+  // P-1：本实例是否因会话切换被 detach（卸载时不中止 SSE）
+  const detachedRef = useRef(false)
+  const conversationStartedNotifiedRef = useRef(false)
   const hasStopRespondedRef = useRef(false)
-  const [isResponding, setIsResponding] = useState(false)
-  const isRespondingRef = useRef(false)
+  const [isResponding, setIsResponding] = useState(hydratedInFlight?.isResponding ?? false)
+  const isRespondingRef = useRef(hydratedInFlight?.isResponding ?? false)
   const taskIdRef = useRef('')
   const pausedStateRef = useRef(false)
   const [suggestedQuestions, setSuggestedQuestions] = useState<string[]>([])
@@ -234,13 +257,43 @@ export const useChat = (
   const params = useParams()
   const pathname = usePathname()
 
-  const [chatTree, setChatTree] = useState<ChatItemInTree[]>(prevChatTree || [])
+  const [chatTree, setChatTree] = useState<ChatItemInTree[]>(
+    hydratedInFlight?.chatTree || prevChatTree || [],
+  )
   const chatTreeRef = useRef<ChatItemInTree[]>(chatTree)
   const [targetMessageId, setTargetMessageId] = useState<string>()
   const threadMessages = useMemo(
     () => getThreadMessages(chatTree, targetMessageId),
     [chatTree, targetMessageId],
   )
+
+  // P-1：hydrate 实例订阅被托管会话的后续更新（旧实例的 SSE 回调持续写存储，这里回放渲染）
+  useEffect(() => {
+    if (!initialConversationId)
+      return
+    const initialInFlight = getInFlightByServerId(initialConversationId)
+    if (!initialInFlight)
+      return
+    const sync = () => {
+      const latest = getInFlightByServerId(initialConversationId)
+      if (!latest)
+        return
+      chatTreeRef.current = latest.chatTree
+      setChatTree(latest.chatTree)
+      setIsResponding(latest.isResponding)
+      isRespondingRef.current = latest.isResponding
+      if (latest.suggestedQuestions)
+        setSuggestedQuestions(latest.suggestedQuestions)
+    }
+    const unsub = subscribeInFlightByServerId(initialConversationId, sync)
+    hydrateUnsubRef.current = unsub
+    sync()
+    return () => {
+      unsub()
+      if (hydrateUnsubRef.current === unsub)
+        hydrateUnsubRef.current = null
+    }
+  }, [initialConversationId])
 
   const getIntroduction = useCallback(
     (str: string) => {
@@ -347,6 +400,9 @@ export const useChat = (
       })
       setChatTree(nextState)
       chatTreeRef.current = nextState
+      // P-1：同步到被托管会话的全局存储
+      if (inFlightLocalKeyRef.current)
+        saveInFlightTree(inFlightLocalKeyRef.current, nextState)
     },
     [produceChatTreeNode],
   )
@@ -354,6 +410,9 @@ export const useChat = (
   const handleResponding = useCallback((isResponding: boolean) => {
     setIsResponding(isResponding)
     isRespondingRef.current = isResponding
+    const key = inFlightLocalKeyRef.current
+    if (key)
+      setInFlightResponding(key, isResponding)
   }, [])
 
   const resolveWorkflowEventsReadyWaiters = useCallback((isReady: boolean) => {
@@ -522,10 +581,30 @@ export const useChat = (
     resolveWorkflowEventsReadyWaiters(false)
   }, [resolveWorkflowEventsReadyWaiters])
 
-  useEffect(() => resetWorkflowEventsSubscription, [resetWorkflowEventsSubscription])
+  useEffect(() => {
+    return () => {
+      // P-1：会话切换 detach 时保留事件流，由全局存储托管；其余情况按原逻辑中止
+      if (detachedRef.current)
+        return
+      resetWorkflowEventsSubscription()
+    }
+  }, [resetWorkflowEventsSubscription])
 
   const handleStop = useCallback(() => {
     hasStopRespondedRef.current = true
+    // P-1：hydrate 实例（切回被托管会话）点停止时，先停止旧实例的 SSE 并通知后端
+    const key = inFlightLocalKeyRef.current
+    const inFlight = key ? getInFlightByLocalKey(key) : undefined
+    if (inFlight?.stop) {
+      // 先清空句柄，避免旧实例 handleStop 取到自身导致递归
+      const stopFn = inFlight.stop
+      inFlight.stop = undefined
+      stopFn()
+    }
+    if (hydrateUnsubRef.current) {
+      hydrateUnsubRef.current()
+      hydrateUnsubRef.current = null
+    }
     handleResponding(false)
     if (stopChat && taskIdRef.current && !pausedStateRef.current) stopChat(taskIdRef.current)
     if (conversationMessagesAbortControllerRef.current)
@@ -536,10 +615,30 @@ export const useChat = (
     resetWorkflowEventsSubscription()
   }, [stopChat, handleResponding, resetWorkflowEventsSubscription])
 
+  // P-1：会话切换时调用：当前仍在流式中则托管（不中止连接、不通知后端停止），否则按原逻辑停止
+  const handleDetach = useCallback(() => {
+    const key = inFlightLocalKeyRef.current
+    const inFlight = key ? getInFlightByLocalKey(key) : undefined
+    if (key && inFlight && isRespondingRef.current) {
+      detachedRef.current = true
+      // 仅注册一次：发起实例 detach 时写入；hydrate 实例再次 detach 不覆盖发起实例的句柄
+      if (!inFlight.stop)
+        setInFlightStop(key, handleStop)
+      return
+    }
+    handleStop()
+  }, [handleStop])
+
   const handleRestart = useCallback(
     (cb?: any) => {
       conversationIdRef.current = initialConversationIdRef.current
       taskIdRef.current = ''
+      inFlightLocalKeyRef.current = ''
+      detachedRef.current = false
+      if (hydrateUnsubRef.current) {
+        hydrateUnsubRef.current()
+        hydrateUnsubRef.current = null
+      }
       handleStop()
       setChatTree([])
       setSuggestedQuestions([])
@@ -584,6 +683,7 @@ export const useChat = (
       {
         onGetSuggestedQuestions,
         onConversationComplete,
+        onConversationStarted,
         onSendSettled,
         onNotifyError,
         isPublicAPI,
@@ -599,6 +699,19 @@ export const useChat = (
         workflowEventsAbortControllerRef.current?.abort()
         workflowEventsAbortControllerRef.current = null
       }
+      // P-1：恢复暂停工作流同样纳入全局托管
+      const resumeLocalKey = `resume:${workflowRunId}`
+      inFlightLocalKeyRef.current = resumeLocalKey
+      detachedRef.current = false
+      conversationStartedNotifiedRef.current = false
+      if (hydrateUnsubRef.current) {
+        hydrateUnsubRef.current()
+        hydrateUnsubRef.current = null
+      }
+      if (!getInFlightByLocalKey(resumeLocalKey))
+        createInFlight(resumeLocalKey, conversationIdRef.current, chatTreeRef.current)
+      if (conversationIdRef.current)
+        bindInFlightServerId(resumeLocalKey, conversationIdRef.current)
       const getOrCreatePlayer = createAudioPlayerManager()
       let hasSettled = false
       const settleSend = (hasError?: boolean) => {
@@ -633,7 +746,15 @@ export const useChat = (
             if (messageId) responseItem.id = messageId
           })
 
-          if (isFirstMessage && newConversationId) conversationIdRef.current = newConversationId
+          if (isFirstMessage && newConversationId) {
+            conversationIdRef.current = newConversationId
+            // P-1：绑定服务端会话 id 并通知会话条目立即登记
+            bindInFlightServerId(resumeLocalKey, newConversationId)
+            if (!conversationStartedNotifiedRef.current) {
+              conversationStartedNotifiedRef.current = true
+              onConversationStarted?.(newConversationId)
+            }
+          }
 
           if (taskId) taskIdRef.current = taskId
         },
@@ -670,6 +791,9 @@ export const useChat = (
                     (suggestedQuestionsAbortControllerRef.current = newAbortController),
                 )
                 setSuggestedQuestions(data)
+                // P-1：推荐问题同步到托管存储，切回实例可回放
+                if (inFlightLocalKeyRef.current)
+                  setInFlightSuggestedQuestions(inFlightLocalKeyRef.current, data || [])
               } catch {
                 setSuggestedQuestions([])
               }
@@ -1076,6 +1200,9 @@ export const useChat = (
       }
       setChatTree(nextState)
       chatTreeRef.current = nextState
+      // P-1：同步到被托管会话的全局存储
+      if (inFlightLocalKeyRef.current)
+        saveInFlightTree(inFlightLocalKeyRef.current, nextState)
     },
     [chatTree, produceChatTreeNode],
   )
@@ -1093,6 +1220,7 @@ export const useChat = (
         onGetConversationMessages,
         onGetSuggestedQuestions,
         onConversationComplete,
+        onConversationStarted,
         onUnhandledEvent,
         onSendSettled,
         onNotifyError,
@@ -1109,16 +1237,26 @@ export const useChat = (
       pausedStateRef.current = false
       resetWorkflowEventsSubscription()
       const requestGeneration = ++workflowRequestGenerationRef.current
+      // P-1：取消 hydrate 订阅，新发送由本实例直接接管
+      if (hydrateUnsubRef.current) {
+        hydrateUnsubRef.current()
+        hydrateUnsubRef.current = null
+      }
+      detachedRef.current = false
+      conversationStartedNotifiedRef.current = false
 
       const parentMessage = threadMessages.find((item) => item.id === data.parent_message_id)
 
       const placeholderQuestionId = `question-${Date.now()}`
+      // P-3：消息上树即记录本地渲染时刻（毫秒），用于消息头部时间行
+      const sendTimestamp = Date.now()
       const questionItem = {
         id: placeholderQuestionId,
         content: data.query,
         isAnswer: false,
         message_files: data.files,
         parentMessageId: data.parent_message_id,
+        clientTimestamp: sendTimestamp,
       }
 
       const placeholderAnswerId = `answer-placeholder-${Date.now()}`
@@ -1128,7 +1266,13 @@ export const useChat = (
         isAnswer: true,
         parentMessageId: questionItem.id,
         siblingIndex: parentMessage?.children?.length ?? chatTree.length,
+        clientTimestamp: sendTimestamp,
       }
+
+      // P-1：登记本次发送的托管记录（首包前用 localKey，首包后绑定 serverConversationId）
+      const inFlightLocalKey = `send:${placeholderQuestionId}`
+      inFlightLocalKeyRef.current = inFlightLocalKey
+      createInFlight(inFlightLocalKey, conversationIdRef.current, chatTreeRef.current)
 
       setTargetMessageId(parentMessage?.id)
       updateCurrentQAOnTree({
@@ -1147,6 +1291,7 @@ export const useChat = (
         isAnswer: true,
         parentMessageId: questionItem.id,
         siblingIndex: parentMessage?.children?.length ?? chatTree.length,
+        clientTimestamp: sendTimestamp,
       }
 
       handleResponding(true)
@@ -1226,7 +1371,15 @@ export const useChat = (
             hasSetResponseId = true
           }
 
-          if (isFirstMessage && newConversationId) conversationIdRef.current = newConversationId
+          if (isFirstMessage && newConversationId) {
+            conversationIdRef.current = newConversationId
+            // P-1：绑定服务端会话 id 并通知会话条目立即登记
+            bindInFlightServerId(inFlightLocalKey, newConversationId)
+            if (!conversationStartedNotifiedRef.current) {
+              conversationStartedNotifiedRef.current = true
+              onConversationStarted?.(newConversationId)
+            }
+          }
 
           taskIdRef.current = taskId
           if (messageId) responseItem.id = messageId
@@ -1260,6 +1413,11 @@ export const useChat = (
 
           try {
             if (hasError) return
+
+            // P-3：回答渲染完成时刻（若随后合并到历史消息，会以 created_at 覆盖）
+            updateChatTreeNode(responseItem.id, (node) => {
+              node.clientTimestamp = Date.now()
+            })
 
             let completedWorkflowRunId = responseItem.workflow_run_id
 
@@ -1325,6 +1483,10 @@ export const useChat = (
                 },
                 // for agent log
                 conversationId: conversationIdRef.current,
+                // P-3：历史消息以后端 created_at（秒）换算的本地时间戳为准
+                clientTimestamp: newResponseItem.created_at
+                  ? newResponseItem.created_at * 1000
+                  : Date.now(),
                 input: {
                   inputs: newResponseItem.inputs,
                   query: newResponseItem.query,
@@ -1346,6 +1508,9 @@ export const useChat = (
                     (suggestedQuestionsAbortControllerRef.current = newAbortController),
                 )
                 setSuggestedQuestions(data)
+                // P-1：推荐问题同步到托管存储，切回实例可回放
+                if (inFlightLocalKeyRef.current)
+                  setInFlightSuggestedQuestions(inFlightLocalKeyRef.current, data || [])
               } catch {
                 setSuggestedQuestions([])
               }
@@ -1488,6 +1653,8 @@ export const useChat = (
         onError() {
           if (requestGeneration !== workflowRequestGenerationRef.current) return
 
+          // P-3：异常终止也补时间行
+          responseItem.clientTimestamp = Date.now()
           handleResponding(false)
           settleSend(true)
           updateCurrentQAOnTree({
@@ -1944,6 +2111,7 @@ export const useChat = (
     suggestedQuestions,
     handleRestart,
     handleStop,
+    handleDetach,
     handleAnnotationEdited,
     handleAnnotationAdded,
     handleAnnotationRemoved,

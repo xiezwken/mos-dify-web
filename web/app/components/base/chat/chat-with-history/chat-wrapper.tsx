@@ -26,6 +26,7 @@ import { TransferMethod } from '@/types/app'
 import { formatBooleanInputs } from '@/utils/model-config'
 import Chat from '../chat'
 import { useChat } from '../chat/hooks'
+import { getInFlightByServerId } from '../chat/in-flight-store'
 import { getLastAnswer, isValidGeneratedAnswer } from '../utils'
 import { useChatWithHistoryContext } from './context'
 
@@ -41,6 +42,7 @@ const ChatWrapper = () => {
     newConversationInputs,
     newConversationInputsRef,
     handleNewConversationCompleted,
+    handleConversationStarted,
     isMobile,
     isInstalledApp,
     appId,
@@ -85,6 +87,7 @@ const ChatWrapper = () => {
     chatList,
     handleSend,
     handleStop,
+    handleDetach,
     handleSwitchSibling,
     prepareHumanInputSubmission,
     isResponding: respondingState,
@@ -99,7 +102,8 @@ const ChatWrapper = () => {
     (taskId) => stopChatMessageResponding('', taskId, appSourceType, appId),
     clearChatList,
     setClearChatList,
-    undefined,
+    // P-1：传入当前会话 id，使切回托管中的在飞会话时可从全局存储 hydrate
+    currentConversationId || undefined,
     { isNewAgent, timezone },
   )
   const inputsFormValue = currentConversationId
@@ -151,7 +155,11 @@ const ChatWrapper = () => {
   }, [allInputsHidden, inputsForms, chatList, inputsFormValue])
 
   useEffect(() => {
-    if (currentChatInstanceRef.current) currentChatInstanceRef.current.handleStop = handleStop
+    if (currentChatInstanceRef.current) {
+      currentChatInstanceRef.current.handleStop = handleStop
+      // P-1：会话切换时优先 detach（在飞流托管不中断），无在飞流时回退为 stop
+      currentChatInstanceRef.current.detach = handleDetach
+    }
   }, [])
 
   useEffect(() => {
@@ -161,6 +169,10 @@ const ChatWrapper = () => {
   // Resume paused workflows when chat history is loaded
   useEffect(() => {
     if (!appPrevChatTree || appPrevChatTree.length === 0) return
+
+    // P-1：该会话仍在被旧实例托管（events 订阅由旧实例持有）时，不重复发起 resume 订阅
+    if (currentConversationId && getInFlightByServerId(currentConversationId))
+      return
 
     // Find the last answer item with workflow_run_id that needs resumption (DFS - find deepest first)
     let lastPausedNode: ChatItemInTree | undefined
@@ -221,6 +233,8 @@ const ChatWrapper = () => {
         onGetSuggestedQuestions: (responseItemId) =>
           fetchSuggestedQuestions(responseItemId, appSourceType, appId),
         onConversationComplete: isHistoryConversation ? undefined : handleNewConversationCompleted,
+        // P-1：新会话首条消息拿到 id 时立即登记侧边栏条目
+        onConversationStarted: isHistoryConversation ? undefined : handleConversationStarted,
         isPublicAPI: appSourceType === AppSourceType.webApp,
       })
       const appMode = isNewAgent ? 'agent-v2' : appData?.mode
@@ -238,6 +252,7 @@ const ChatWrapper = () => {
       appId,
       isHistoryConversation,
       handleNewConversationCompleted,
+      handleConversationStarted,
       isNewAgent,
       appData?.mode,
     ],
@@ -438,7 +453,7 @@ const ChatWrapper = () => {
         speechToTextTarget={speechToTextTarget}
         chatList={messageList}
         isResponding={respondingState}
-        chatContainerInnerClassName={`mx-auto pt-6 w-full max-w-[768px] ${isMobile && 'px-4'}`}
+        chatContainerInnerClassName={`mx-auto pt-6 w-full max-w-[768px] ${isMobile ? 'px-4' : ''}`}
         chatFooterClassName="pb-4"
         chatFooterInnerClassName={`mx-auto w-full max-w-[768px] ${isMobile ? 'px-2' : 'px-4'}`}
         onSend={doSend}

@@ -31,12 +31,14 @@ export type ChatWithHistoryContextValue = {
   conversationRenaming: boolean
   handleRenameConversation: (conversationId: string, newName: string, callback: Callback) => void
   handleNewConversationCompleted: (newConversationId: string) => void
+  /** P-1：首条消息拿到 conversationId 时立即登记会话条目（不等流完成） */
+  handleConversationStarted: (conversationId: string) => void
   chatShouldReloadKey: string
   isMobile: boolean
   isInstalledApp: boolean
   appId?: string
   handleFeedback: OnFeedback
-  currentChatInstanceRef: RefObject<{ handleStop: () => void }>
+  currentChatInstanceRef: RefObject<{ handleStop: () => void; detach?: () => void }>
   theme?: Theme
   sidebarCollapseState?: boolean
   handleSidebarCollapse: (state: boolean) => void
@@ -73,11 +75,15 @@ export const ChatWithHistoryContext = createContext<ChatWithHistoryContextValue>
   conversationRenaming: false,
   handleRenameConversation: noop,
   handleNewConversationCompleted: noop,
+  handleConversationStarted: noop,
   chatShouldReloadKey: '',
   isMobile: false,
   isInstalledApp: false,
   handleFeedback: () => Promise.resolve(),
-  currentChatInstanceRef: { current: { handleStop: noop } },
+  currentChatInstanceRef: { current: { handleStop: noop } } as RefObject<{
+    handleStop: () => void
+    detach?: () => void
+  }>,
   sidebarCollapseState: false,
   handleSidebarCollapse: noop,
   clearChatList: false,

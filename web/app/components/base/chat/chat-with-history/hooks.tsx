@@ -34,6 +34,8 @@ import {
 import { TransferMethod } from '@/types/app'
 import { addFileInfos, sortAgentSorts } from '../../../tools/utils'
 import { enrichSubmittedHumanInputFormData } from '../chat/answer/human-input-content/submitted-utils'
+import { getInFlightByServerId } from '../chat/in-flight-store'
+import { serverCreatedAtToMs } from '../chat/timestamp'
 import {
   buildChatItemTree,
   getProcessedSystemVariablesFromUrlParams,
@@ -58,6 +60,7 @@ function getFormattedChatList(messages: any[]) {
         })),
       ),
       parentMessageId: item.parent_message_id || undefined,
+      clientTimestamp: serverCreatedAtToMs(item.created_at),
     })
     const answerFiles =
       item.message_files?.filter((file: any) => file.belongs_to === 'assistant') || []
@@ -124,6 +127,7 @@ function getFormattedChatList(messages: any[]) {
       humanInputFilledFormDataList,
       workflow_run_id: workflowRunId,
       more,
+      clientTimestamp: serverCreatedAtToMs(item.created_at),
     })
   })
   return newChatList
@@ -189,6 +193,11 @@ export const useChatWithHistory = (installedAppInfo?: InstalledAppResponse) => {
     appId,
     userId,
   })
+  // P-1：跟踪当前会话 id，供在飞会话完成回调判断是否应切换当前视图
+  const currentConversationIdRef = useRef(currentConversationId)
+  useEffect(() => {
+    currentConversationIdRef.current = currentConversationId
+  }, [currentConversationId])
   const [newConversationId, setNewConversationId] = useState('')
   const chatShouldReloadKey = useMemo(() => {
     if (currentConversationId === newConversationId) return ''
@@ -236,13 +245,18 @@ export const useChatWithHistory = (installedAppInfo?: InstalledAppResponse) => {
   const invalidateShareConversations = useInvalidateShareConversations()
   const [clearChatList, setClearChatList] = useState(false)
   const [isResponding, setIsResponding] = useState(false)
-  const appPrevChatTree = useMemo(
-    () =>
-      currentConversationId && appChatListData?.data.length
-        ? buildChatItemTree(getFormattedChatList(appChatListData.data))
-        : [],
-    [appChatListData, currentConversationId],
-  )
+  const appPrevChatTree = useMemo(() => {
+    // P-1：切回仍在飞（托管中）的会话时，优先用全局存储里的实时消息树，
+    // 避免被空/半截历史数据覆盖；挂载后由 useChat 订阅存储持续更新。
+    if (currentConversationId) {
+      const inFlight = getInFlightByServerId(currentConversationId)
+      if (inFlight)
+        return inFlight.chatTree
+    }
+    return currentConversationId && appChatListData?.data.length
+      ? buildChatItemTree(getFormattedChatList(appChatListData.data))
+      : []
+  }, [appChatListData, currentConversationId])
   const [showNewConversationItemInList, setShowNewConversationItemInList] = useState(false)
   const pinnedConversationList = useMemo(() => {
     return appPinnedConversationData?.data || []
@@ -459,10 +473,16 @@ export const useChatWithHistory = (installedAppInfo?: InstalledAppResponse) => {
   )
   const currentChatInstanceRef = useRef<{
     handleStop: () => void
+    detach?: () => void
   }>({ handleStop: noop })
   const handleChangeConversation = useCallback(
     (conversationId: string) => {
-      currentChatInstanceRef.current.handleStop()
+      // P-1：切走时若该会话仍在流式中，detach 会托管事件流（不中止）；否则内部按原逻辑停止
+      const instance = currentChatInstanceRef.current
+      if (instance.detach)
+        instance.detach()
+      else
+        instance.handleStop()
       setNewConversationId('')
       handleConversationIdInfoChange(conversationId)
       if (conversationId) setClearChatList(false)
@@ -559,14 +579,60 @@ export const useChatWithHistory = (installedAppInfo?: InstalledAppResponse) => {
     },
     [appSourceType, appId, t, conversationRenaming, originConversationList],
   )
+  // P-1：首条消息已拿到 conversationId，立即在侧边栏登记真实条目（不等流完成），
+  // 但不切换当前视图（用户可能已切到其他会话）
+  const handleConversationStarted = useCallback(
+    (serverId: string) => {
+      if (!serverId)
+        return
+      setNewConversationId(serverId)
+      setOriginConversationList(
+        produce((draft) => {
+          if (draft.some(item => item.id === serverId))
+            return
+          draft.unshift({
+            id: serverId,
+            name: t(($) => $['chat.newChatDefaultName'], { ns: 'share' }),
+            inputs: {},
+            introduction: '',
+          })
+        }),
+      )
+    },
+    [t],
+  )
   const handleNewConversationCompleted = useCallback(
-    (newConversationId: string) => {
-      setNewConversationId(newConversationId)
-      handleConversationIdInfoChange(newConversationId)
+    (serverId: string) => {
+      // P-1：用户已切到其他会话时，只刷新列表/补条目，不强行切回完成的会话
+      const activeId = currentConversationIdRef.current
+      if (activeId && activeId !== serverId) {
+        setOriginConversationList(
+          produce((draft) => {
+            if (!draft.some(item => item.id === serverId))
+              draft.unshift({
+                id: serverId,
+                name: t(($) => $['chat.newChatDefaultName'], { ns: 'share' }),
+                inputs: {},
+                introduction: '',
+              })
+          }),
+        )
+        invalidateShareConversations()
+        return
+      }
+      // 用户已切回该会话（activeId === serverId）时，视图无需切换，仅刷新列表
+      if (activeId === serverId) {
+        setShowNewConversationItemInList(false)
+        invalidateShareConversations()
+        return
+      }
+      // 用户仍停留在新会话页（activeId === ''）：按原逻辑正式切换到该会话
+      setNewConversationId(serverId)
+      handleConversationIdInfoChange(serverId)
       setShowNewConversationItemInList(false)
       invalidateShareConversations()
     },
-    [handleConversationIdInfoChange, invalidateShareConversations],
+    [handleConversationIdInfoChange, invalidateShareConversations, t],
   )
   const handleFeedback: OnFeedback = useCallback(
     async (messageId, feedback) => {
@@ -614,6 +680,7 @@ export const useChatWithHistory = (installedAppInfo?: InstalledAppResponse) => {
     conversationRenaming,
     handleRenameConversation,
     handleNewConversationCompleted,
+    handleConversationStarted,
     newConversationId,
     chatShouldReloadKey,
     handleFeedback,

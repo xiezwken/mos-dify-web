@@ -62,7 +62,7 @@ const ChatWithHistory: FC<ChatWithHistoryProps> = ({ className }) => {
         )}
         <div
           className={cn(
-            'flex h-full flex-col overflow-hidden border-[0,5px] border-components-panel-border-subtle bg-chatbot-bg',
+            'flex h-full flex-col overflow-hidden border-[0.5px] border-components-panel-border-subtle bg-chatbot-bg',
             isMobile ? 'rounded-t-2xl' : 'rounded-2xl',
           )}
         >
@@ -113,6 +113,7 @@ const ChatWithHistoryWrap: FC<ChatWithHistoryWrapProps> = ({
     conversationRenaming,
     handleRenameConversation,
     handleNewConversationCompleted,
+    handleConversationStarted,
     chatShouldReloadKey,
     isInstalledApp,
     appId,
@@ -159,6 +160,7 @@ const ChatWithHistoryWrap: FC<ChatWithHistoryWrapProps> = ({
         conversationRenaming,
         handleRenameConversation,
         handleNewConversationCompleted,
+        handleConversationStarted,
         chatShouldReloadKey,
         isMobile,
         isInstalledApp,

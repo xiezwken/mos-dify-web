@@ -23,7 +23,7 @@ const ThinkingDetails = ({
   const { t } = useTranslation()
 
   return (
-    <details {...rest} className={cn('group', className)} open={isComplete ? open : true}>
+    <details {...rest} style={{ display: 'none' }} className={cn('group', className)} open={isComplete ? open : true}>
       <summary className="flex cursor-pointer list-none items-center pl-2 font-bold whitespace-nowrap text-text-secondary select-none">
         <div className="flex shrink-0 items-center">
           <svg

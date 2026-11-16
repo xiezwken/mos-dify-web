@@ -31,6 +31,18 @@ import {
   isAllowedFileExtension,
 } from './utils'
 
+// MOS-PASTE-MD 2026-11-04 patch v1 begin
+// 粘贴超长纯文本自动转MD附件（总参席对话栏）：阈值与上限取值由沐宸2026-11-04定
+export const PASTE_MD_THRESHOLD = 1000
+export const PASTE_MD_MAX = 20000
+const PASTE_MD_MSG_CONVERTED = '文本较长，已转为MD附件'
+const PASTE_MD_MSG_FILE_LIMIT = '附件数量已达上限，请分条发送'
+const PASTE_MD_MSG_TOO_LONG = '文本过长请分段粘贴'
+const pad2 = (n: number) => String(n).padStart(2, '0')
+const buildPasteMdFileName = (now: Date) =>
+  `粘贴文本_${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}_${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}.md`
+// MOS-PASTE-MD 2026-11-04 patch v1 end
+
 export const useFileSizeLimit = (fileUploadConfig?: FileUploadConfigResponse) => {
   const imgSizeLimit =
     Number(fileUploadConfig?.image_file_size_limit) * 1024 * 1024 || IMG_SIZE_LIMIT
@@ -417,12 +429,34 @@ export const useFile = (fileConfig: FileUpload, noNeedToCheckEnable = true) => {
     (e: ClipboardEvent<HTMLTextAreaElement>) => {
       const file = e.clipboardData?.files[0]
       const text = e.clipboardData?.getData('text/plain')
+      // MOS-PASTE-MD 2026-11-04 patch v1 begin
+      if (!file && text) {
+        if (text.length > PASTE_MD_MAX) {
+          toast.error(PASTE_MD_MSG_TOO_LONG)
+          return
+        }
+        if (text.length >= PASTE_MD_THRESHOLD) {
+          const { files } = fileStore.getState()
+          if (fileConfig.number_limits && files.length >= fileConfig.number_limits) {
+            toast.error(PASTE_MD_MSG_FILE_LIMIT)
+            return
+          }
+          e.preventDefault()
+          const mdFile = new File([text], buildPasteMdFileName(new Date()), {
+            type: 'text/markdown',
+          })
+          handleLocalFileUpload(mdFile)
+          toast.success(PASTE_MD_MSG_CONVERTED)
+          return
+        }
+      }
+      // MOS-PASTE-MD 2026-11-04 patch v1 end
       if (file && !text) {
         e.preventDefault()
         handleLocalFileUpload(file)
       }
     },
-    [handleLocalFileUpload],
+    [handleLocalFileUpload, fileStore, fileConfig.number_limits],
   )
 
   const [isDragActive, setIsDragActive] = useState(false)

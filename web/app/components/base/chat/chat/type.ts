@@ -132,6 +132,12 @@ export type IChatItem = {
   humanInputFormDataList?: HumanInputFormData[]
   humanInputFilledFormDataList?: HumanInputFilledFormData[]
   extra_contents?: ExtraContent[]
+  /**
+   * P-3：消息头部时间行使用的本地时间戳（毫秒）。
+   * 流式消息为前端渲染时刻；历史消息为后端 created_at（秒）换算。
+   * 格式 YYYY-MM-DD HH:MM，见 chat/timestamp.ts。
+   */
+  clientTimestamp?: number
 }
 
 export type Metadata = {

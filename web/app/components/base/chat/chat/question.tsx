@@ -15,6 +15,7 @@ import { Markdown } from '@/app/components/base/markdown'
 import { CssTransform } from '../embedded-chatbot/theme/utils'
 import ContentSwitch from './content-switch'
 import { useChatContext } from './context'
+import { formatLocalDateTime } from './timestamp'
 
 type QuestionProps = {
   item: ChatItem
@@ -190,6 +191,14 @@ const Question: FC<QuestionProps> = ({
               : {}
           }
         >
+          {!isEditing && item.clientTimestamp && (
+            <div
+              className="mb-1 text-right system-xs-regular text-text-quaternary"
+              data-testid="question-timestamp"
+            >
+              {formatLocalDateTime(item.clientTimestamp)}
+            </div>
+          )}
           {!!message_files?.length && (
             <FileList
               className={cn(isEditing ? 'mb-3' : 'mb-2')}

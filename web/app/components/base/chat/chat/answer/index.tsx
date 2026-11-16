@@ -13,6 +13,7 @@ import LoadingAnim from '@/app/components/base/chat/chat/loading-anim'
 import { FileList } from '@/app/components/base/file-uploader'
 import ContentSwitch from '../content-switch'
 import { useChatContext } from '../context'
+import { formatLocalDateTime } from '../timestamp'
 import AgentContent from './agent-content'
 import BasicContent from './basic-content'
 import HumanInputFilledFormList from './human-input-filled-form-list'
@@ -174,6 +175,15 @@ const Answer: FC<AnswerProps> = ({
         ref={containerRef}
         data-testid="chat-answer-container"
       >
+        {/* P-3：消息头部时间行（本地时区 YYYY-MM-DD HH:MM） */}
+        {item.clientTimestamp && (
+          <div
+            className="mb-1 system-xs-regular text-text-quaternary"
+            data-testid="answer-timestamp"
+          >
+            {formatLocalDateTime(item.clientTimestamp)}
+          </div>
+        )}
         {/* Block 1: Workflow Process + Human Input Forms */}
         {hasHumanInputs && (
           <div

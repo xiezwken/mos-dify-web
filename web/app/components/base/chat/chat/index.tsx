@@ -14,8 +14,10 @@ import { memo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useShallow } from 'zustand/react/shallow'
 import { useStore as useAppStore } from '@/app/components/app/store'
+import ErrorBoundary from '@/app/components/base/error-boundary'
 import Answer from './answer'
 import ChatInputArea from './chat-input-area'
+import ResidentBar from './resident-bar'
 import ChatLogModals from './chat-log-modals'
 import { ChatContextProvider } from './context-provider'
 import Question from './question'
@@ -199,7 +201,7 @@ const Chat: FC<ChatProps> = ({
           data-testid="chat-container"
           ref={chatContainerRef}
           className={cn(
-            'relative h-full overflow-x-hidden overflow-y-auto',
+            'chat-scroll-ruler relative h-full overflow-x-hidden overflow-y-auto',
             isTryApp && 'h-0 grow',
             chatContainerClassName,
           )}
@@ -218,11 +220,22 @@ const Chat: FC<ChatProps> = ({
               if (item.isAnswer) {
                 const isLast = item.id === chatList.at(-1)?.id
                 return (
-                  <Answer
-                    answerActionPosition={answerActionPosition}
-                    appData={appData}
+                  <ErrorBoundary
                     key={item.id}
-                    item={item}
+                    isolate={false}
+                    className="!min-h-0 !p-3 my-2"
+                    resetKeys={[
+                      item.id,
+                      item.content.length,
+                      item.agent_thoughts?.length ?? 0,
+                      item.workflowProcess?.tracing?.length ?? 0,
+                    ]}
+                  >
+                    <Answer
+                      answerActionPosition={answerActionPosition}
+                      appData={appData}
+                      key={item.id}
+                      item={item}
                     question={chatList[index - 1]?.content ?? ''}
                     index={index}
                     config={config}
@@ -237,18 +250,26 @@ const Chat: FC<ChatProps> = ({
                     renderAgentContent={renderAgentContent}
                     onHumanInputFormSubmit={onHumanInputFormSubmit}
                   />
+                  </ErrorBoundary>
                 )
               }
               return (
-                <Question
+                <ErrorBoundary
                   key={item.id}
-                  item={item}
-                  questionIcon={questionIcon}
-                  theme={theme}
-                  enableEdit={config?.questionEditEnable}
-                  switchSibling={switchSibling}
-                  hideAvatar={hideAvatar}
-                />
+                  isolate={false}
+                  className="!min-h-0 !p-3 my-2"
+                  resetKeys={[item.id, item.content.length]}
+                >
+                  <Question
+                    key={item.id}
+                    item={item}
+                    questionIcon={questionIcon}
+                    theme={theme}
+                    enableEdit={config?.questionEditEnable}
+                    switchSibling={switchSibling}
+                    hideAvatar={hideAvatar}
+                  />
+                </ErrorBoundary>
               )
             })}
           </div>
@@ -298,6 +319,7 @@ const Chat: FC<ChatProps> = ({
               </div>
             )}
             {hasTryToAsk && <TryToAsk suggestedQuestions={suggestedQuestions} onSend={onSend} />}
+            <ResidentBar chatList={chatList} />
             {!noChatInput && (
               <ChatInputArea
                 botName={inputPlaceholderBotName || appData?.site?.title || 'Bot'}

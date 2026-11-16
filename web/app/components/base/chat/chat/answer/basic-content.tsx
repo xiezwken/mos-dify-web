@@ -4,6 +4,16 @@ import { cn } from '@langgenius/dify-ui/cn'
 import { memo } from 'react'
 import { Markdown } from '@/app/components/base/markdown'
 
+// Strip deepseek thinking markers from content so they are not rendered
+function stripDeepSeekReasoning(text: string): string {
+  if (typeof text !== 'string') return text
+  const marker = '<!--dify-deepseek-reasoning-->'
+  const idx = text.indexOf(marker)
+  if (idx >= 0) text = text.replace(marker, '')
+  text = text.replace(/<think[^>]*>[\s\S]*?<\/think>/gi, '')
+  return text
+}
+
 type BasicContentProps = {
   item: ChatItem
 }
@@ -13,7 +23,7 @@ const BasicContent: FC<BasicContentProps> = ({ item }) => {
   if (annotation?.logAnnotation) {
     return (
       <Markdown
-        content={annotation?.logAnnotation.content || ''}
+      content={stripDeepSeekReasoning(annotation?.logAnnotation.content || '')}
         data-testid="basic-content-markdown"
       />
     )
@@ -29,7 +39,7 @@ const BasicContent: FC<BasicContentProps> = ({ item }) => {
   return (
     <Markdown
       className={cn(item.isError && 'text-[#F04438]!')}
-      content={displayContent}
+      content={stripDeepSeekReasoning(displayContent)}
       data-testid="basic-content-markdown"
     />
   )

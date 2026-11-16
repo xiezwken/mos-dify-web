@@ -4,6 +4,7 @@ import { flow } from 'es-toolkit/compat'
 import { memo, useMemo } from 'react'
 import dynamic from '@/next/dynamic'
 import { preprocessLaTeX, preprocessThinkTag } from './markdown-utils'
+import RetryErrorBoundary from './retry-error-boundary'
 
 const StreamdownWrapper = dynamic(() => import('./streamdown-wrapper'), { ssr: false })
 
@@ -51,16 +52,18 @@ export const Markdown = memo((props: MarkdownProps) => {
       className={cn('markdown-body', 'text-text-primary!', className)}
       data-testid="markdown-body"
     >
-      <StreamdownWrapper
-        pluginInfo={pluginInfo}
-        latexContent={latexContent}
-        customComponents={customComponents}
-        customDisallowedElements={customDisallowedElements}
-        remarkPlugins={remarkPlugins}
-        rehypePlugins={rehypePlugins}
-        isAnimating={isAnimating}
-        mode={mode}
-      />
+      <RetryErrorBoundary>
+        <StreamdownWrapper
+          pluginInfo={pluginInfo}
+          latexContent={latexContent}
+          customComponents={customComponents}
+          customDisallowedElements={customDisallowedElements}
+          remarkPlugins={remarkPlugins}
+          rehypePlugins={rehypePlugins}
+          isAnimating={isAnimating}
+          mode={mode}
+        />
+      </RetryErrorBoundary>
     </div>
   )
 })

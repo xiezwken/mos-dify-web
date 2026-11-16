@@ -55,16 +55,25 @@ function joinPublicContent(blocks: Array<string | undefined>) {
 }
 
 function getPublicResponseContent(item: ChatItem) {
-  if (item.content.trim()) return item.content
+  const stripDeepSeekReasoning = (text: string): string => {
+    if (typeof text !== 'string') return text
+    const marker = '<!--dify-deepseek-reasoning-->'
+    const idx = text.indexOf(marker)
+    if (idx >= 0) text = text.replace(marker, '')
+    text = text.replace(/<think[^>]*>[\s\S]*?<\/think>/gi, '')
+    return text
+  }
+
+  if (item.content.trim()) return stripDeepSeekReasoning(item.content)
 
   const responseContent = joinPublicContent(
     item.agent_response_parts?.map((part) =>
       part.type === 'message' ? part.content : undefined,
     ) ?? [],
   )
-  if (responseContent) return responseContent
+  if (responseContent) return stripDeepSeekReasoning(responseContent)
 
-  return joinPublicContent(item.agent_thoughts?.map((thought) => thought.answer) ?? [])
+  return stripDeepSeekReasoning(joinPublicContent(item.agent_thoughts?.map((thought) => thought.answer) ?? []))
 }
 
 const FeedbackTooltip = ({ content, children }: FeedbackTooltipProps) => {

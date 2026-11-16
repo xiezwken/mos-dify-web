@@ -17,6 +17,7 @@ import { getLocaleOnServer } from '@/i18n-config/server'
 import { headers } from '@/next/headers'
 import { getApplicationTitle } from '@/utils/document-title'
 import { CloudAnalytics } from './components/base/analytics-consent/cloud-analytics'
+import ErrorBoundary from './components/base/error-boundary'
 import { PartnerStackCookieRecorder } from './components/billing/partner-stack/cookie-recorder'
 import { AgentationLoader } from './components/devtools/agentation-loader'
 import { ReactScanLoader } from './components/devtools/react-scan/loader'
@@ -89,7 +90,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                       <SystemFeaturesBootstrapBoundary>
                         <PartnerStackCookieRecorder />
                         <TooltipProvider delay={300} closeDelay={200}>
-                          {children}
+                          {/* P-2：应用级组件崩溃兜底，fallback 自带重试/刷新，路由级 error.tsx 仍保留 */}
+                          <ErrorBoundary className="m-4 min-h-[calc(100vh-2rem)]">
+                            {children}
+                          </ErrorBoundary>
                         </TooltipProvider>
                       </SystemFeaturesBootstrapBoundary>
                     </I18nServerProvider>
