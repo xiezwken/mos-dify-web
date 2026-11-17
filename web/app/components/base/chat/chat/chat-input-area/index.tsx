@@ -8,7 +8,7 @@ import { cn } from '@langgenius/dify-ui/cn'
 import { toast } from '@langgenius/dify-ui/toast'
 import { noop } from 'es-toolkit/function'
 import { decode } from 'html-entities'
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import Textarea from 'react-textarea-autosize'
 import FeatureBar from '@/app/components/base/features/new-feature-panel/feature-bar'
@@ -19,10 +19,40 @@ import { Infotip } from '@/app/components/base/infotip'
 import VoiceInput from '@/app/components/base/voice-input'
 import { TransferMethod } from '@/types/app'
 import { useCheckInputsForms } from '../check-input-forms-hooks'
+import {
+  clearSendQueueForConversation,
+  deserializeFiles,
+  enqueueSend,
+  MOS_SEND_QUEUE_EVENT,
+  readSendQueueForConversation,
+  removeSendQueueItemForConversation,
+  serializeFiles,
+  type SendQueueEntry,
+} from '../mos-send-queue'
 import { useTextAreaHeight } from './hooks'
 import Operation from './operation'
 
 type SendAcceptance = void | boolean | Promise<void | boolean>
+
+// 刀5c：队列摘要渲染——URL 开头显示为「链接×N：/<路径尾段>…」，普通文本维持前 20 字
+function summarizeQueueContent(content: string) {
+  const text = (content || '').trim()
+  if (/^https?:\/\//i.test(text)) {
+    const urls = text.match(/https?:\/\/[^\s]+/gi) || []
+    const count = Math.max(urls.length, 1)
+    let tail = ''
+    try {
+      const parsed = new URL(urls[0])
+      tail = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : `/${parsed.hostname}`
+    }
+    catch {
+      tail = ''
+    }
+    if (tail.length > 60) tail = `${tail.slice(0, 60)}…`
+    return { label: `链接×${count}：${tail}…`, isLink: true }
+  }
+  return { label: text.length > 20 ? `${text.slice(0, 20)}…` : text, isLink: false }
+}
 
 function isMicrophonePermissionDenied(error: unknown) {
   return error instanceof DOMException && error.name === 'NotAllowedError'
@@ -46,6 +76,7 @@ type ChatInputAreaProps = {
   inputsForm?: InputForm[]
   theme?: Theme | null
   isResponding?: boolean
+  conversationId?: string
   disabled?: boolean
   sendButtonLabel?: string
   sendButtonLoading?: boolean
@@ -78,6 +109,7 @@ const ChatInputArea = ({
   inputsForm = [],
   theme,
   isResponding,
+  conversationId,
   disabled,
   sendButtonLabel,
   sendButtonLoading,
@@ -114,30 +146,122 @@ const ChatInputArea = ({
   const queryRef = useRef('')
   const voiceInputRef = useRef<HTMLDivElement>(null)
   const voiceInputReturnFocusRef = useRef<HTMLElement | null>(null)
+  // 刀5b：当前会话排队条目（仅用于输入框上方队列条展示）
+  const [queuedItems, setQueuedItems] = useState<SendQueueEntry[]>([])
+  // 刀5c：点击摘要就地展开全文；键用条目内容，删除其它条目不影响展开态
+  const [expandedQueueItem, setExpandedQueueItem] = useState<string | null>(null)
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    setExpandedQueueItem(null)
+    const syncQueue = () => setQueuedItems(readSendQueueForConversation(conversationId || ''))
+    syncQueue()
+    window.addEventListener(MOS_SEND_QUEUE_EVENT, syncQueue)
+    window.addEventListener('storage', syncQueue)
+    return () => {
+      window.removeEventListener(MOS_SEND_QUEUE_EVENT, syncQueue)
+      window.removeEventListener('storage', syncQueue)
+    }
+  }, [conversationId])
+  const handleRemoveQueuedItem = (index: number) => {
+    setQueuedItems(removeSendQueueItemForConversation(conversationId || '', index))
+  }
+  const handleClearQueuedItems = () => {
+    clearSendQueueForConversation(conversationId || '')
+    setQueuedItems(readSendQueueForConversation(conversationId || ''))
+  }
   const voiceInputCompletedRef = useRef(false)
+  // 刀4：未发送草稿按会话持久化（新会话未注册前用 mos_draft_new）
+  const draftKey = `mos_draft_${conversationId || 'new'}`
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const persistDraft = useCallback(() => {
+    if (typeof window === 'undefined') return
+    if (draftTimerRef.current) {
+      clearTimeout(draftTimerRef.current)
+      draftTimerRef.current = null
+    }
+    const text = queryRef.current
+    const files = filesStore.getState().files
+    if (!text.trim() && files.length === 0) {
+      window.localStorage.removeItem(draftKey)
+      return
+    }
+    try {
+      window.localStorage.setItem(
+        draftKey,
+        JSON.stringify({ text, files: serializeFiles(files), savedAt: Date.now() }),
+      )
+    }
+    catch {
+      // 存储不可用时静默降级
+    }
+  }, [draftKey, filesStore])
+  const schedulePersistDraft = useCallback(() => {
+    if (typeof window === 'undefined') return
+    if (draftTimerRef.current) clearTimeout(draftTimerRef.current)
+    draftTimerRef.current = setTimeout(persistDraft, 500)
+  }, [persistDraft])
+  const clearDraft = useCallback(() => {
+    if (typeof window === 'undefined') return
+    if (draftTimerRef.current) {
+      clearTimeout(draftTimerRef.current)
+      draftTimerRef.current = null
+    }
+    window.localStorage.removeItem(draftKey)
+  }, [draftKey])
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const raw = window.localStorage.getItem(draftKey)
+    if (raw) {
+      try {
+        const draft = JSON.parse(raw)
+        if (!queryRef.current && filesStore.getState().files.length === 0) {
+          if (typeof draft?.text === 'string' && draft.text) {
+            queryRef.current = draft.text
+            setQuery(draft.text)
+            setTimeout(handleTextareaResize, 0)
+          }
+          if (Array.isArray(draft?.files) && draft.files.length)
+            filesStore.getState().setFiles(deserializeFiles(draft.files))
+        }
+      }
+      catch {
+        // 草稿损坏时直接忽略
+      }
+    }
+    // 切换会话/卸载前落盘（刀4 写入点二）
+    return persistDraft
+  }, [draftKey, filesStore, handleTextareaResize, persistDraft])
+  useEffect(() => {
+    const unsubscribe = filesStore.subscribe(schedulePersistDraft)
+    return unsubscribe
+  }, [filesStore, schedulePersistDraft])
+  useEffect(() => {
+    const handleBeforeUnload = () => persistDraft()
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [persistDraft])
   const handleQueryChange = useCallback(
     (value: string) => {
       queryRef.current = value
       setQuery(value)
       setTimeout(handleTextareaResize, 0)
+      schedulePersistDraft()
     },
-    [handleTextareaResize],
+    [handleTextareaResize, schedulePersistDraft],
   )
   const resetAcceptedMessage = useCallback(
     (acceptedQuery: string, acceptedFiles: ReturnType<typeof filesStore.getState>['files']) => {
       const { files, setFiles } = filesStore.getState()
       if (queryRef.current === acceptedQuery) handleQueryChange('')
       if (files === acceptedFiles) setFiles([])
+      // 刀4：消息发出后清除该会话草稿
+      clearDraft()
     },
-    [filesStore, handleQueryChange],
+    [filesStore, handleQueryChange, clearDraft],
   )
   const handleSend = () => {
     if (!canSend) return
 
-    if (isResponding) {
-      toast.info(t(($) => $['errorMessage.waitForResponse'], { ns: 'appDebug' }))
-      return
-    }
     if (onSend) {
       const { files } = filesStore.getState()
       if (
@@ -146,19 +270,33 @@ const ChatInputArea = ({
         toast.info(t(($) => $['errorMessage.waitForFileUpload'], { ns: 'appDebug' }))
         return
       }
-      if (checkInputsForm(inputs, inputsForm)) {
-        const sendResult = onSend(query, files) as SendAcceptance
-        if (sendResult instanceof Promise) {
-          sendResult
-            .then((accepted) => {
-              if (accepted !== false) resetAcceptedMessage(query, files)
-            })
-            .catch(noop)
-          return
-        }
-
-        if (sendResult !== false) resetAcceptedMessage(query, files)
+      if (!checkInputsForm(inputs, inputsForm)) return
+      // 刀5：在飞时点发送改为入队，不再拦截
+      if (isResponding) {
+        enqueueSend({
+          content: query,
+          files: serializeFiles(files),
+          conversationId: conversationId || '',
+        })
+        toast.info(files.length > 0
+          ? `已排队（含 ${files.length} 个附件），回复完成后自动发送`
+          : '已排队，回复完成后自动发送')
+        handleQueryChange('')
+        filesStore.getState().setFiles([])
+        clearDraft()
+        return
       }
+      const sendResult = onSend(query, files) as SendAcceptance
+      if (sendResult instanceof Promise) {
+        sendResult
+          .then((accepted) => {
+            if (accepted !== false) resetAcceptedMessage(query, files)
+          })
+          .catch(noop)
+        return
+      }
+
+      if (sendResult !== false) resetAcceptedMessage(query, files)
     }
   }
   const handleCompositionStart = () => {
@@ -309,6 +447,68 @@ const ChatInputArea = ({
           disabled && 'pointer-events-none border-components-panel-border opacity-50 shadow-none',
         )}
       >
+        {queuedItems.length > 0 && (
+          <div className="mx-2.25 mt-2.25 rounded-lg border border-components-panel-border-subtle bg-util-colors-indigo-indigo-50 px-2.5 py-2">
+            <div className="flex items-center justify-between body-xs-medium text-text-secondary">
+              <span>{`排队 ${queuedItems.length} 条`}</span>
+              <button
+                type="button"
+                className="cursor-pointer body-xs-medium text-text-accent hover:underline"
+                onClick={handleClearQueuedItems}
+              >
+                一键清空
+              </button>
+            </div>
+            <ul className="mt-1 space-y-1">
+              {queuedItems.map((item, index) => {
+                const summary = summarizeQueueContent(item.content)
+                const isExpanded = expandedQueueItem === item.content
+                return (
+                  <li key={`${index}-${item.content.slice(0, 8)}`} className="flex items-start gap-2">
+                    <div
+                      className="min-w-0 flex-1 cursor-pointer"
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={isExpanded}
+                      onClick={() => setExpandedQueueItem(isExpanded ? null : item.content)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          setExpandedQueueItem(isExpanded ? null : item.content)
+                        }
+                      }}
+                    >
+                      <span className={cn('break-all body-xs-regular', summary.isLink ? 'text-text-accent' : 'text-text-secondary')}>
+                        {summary.label}
+                      </span>
+                      {item.files.length > 0 && (
+                        <span
+                          className="ml-1 shrink-0 body-xs-medium text-text-accent"
+                          title={item.files.map(file => file.name).join('\n')}
+                        >
+                          {`📎${item.files.length}`}
+                        </span>
+                      )}
+                      {isExpanded && (
+                        <div className="mt-1 rounded-md bg-components-panel-bg px-2 py-1 break-all whitespace-pre-wrap body-xs-regular text-text-primary">
+                          {item.content}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      aria-label="删除排队消息"
+                      className="shrink-0 cursor-pointer body-xs-medium text-text-accent hover:underline"
+                      onClick={() => handleRemoveQueuedItem(index)}
+                    >
+                      删除
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+        )}
         <div className="px-2.25 pt-2.25">
           <FileListInChatInput fileConfig={visionConfig!} />
         </div>
