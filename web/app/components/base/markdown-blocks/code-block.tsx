@@ -152,6 +152,11 @@ const CodeBlock: any = memo(({ inline, className, children = '', ...props }: any
   const finishedEventCountRef = useRef<number>(0) // Track finished event trigger count
   const match = /language-(\w+)/.exec(className || '')
   const language = match?.[1]
+  // UICOPY-20261117-01／FE-STREAM-R1 病①（v20 复植）：streamdown 以 data-block 标记块级代码，
+  // 不能沿用 react-markdown 的 inline/语言标注约定；裸围栏（无语言标注）亦须走块级渲染并出复制钮。
+  // 三路判据：data-block 在场 ／ 有 language-xx 标注 ／ 正文含换行（块级围栏固有）。
+  const isBlockCode =
+    !inline && ('data-block' in props || !!match || /[\r\n]/.test(String(children)))
   const languageShowName = getCorrectCapitalizationLanguageName(language || '')
   const isDarkMode = theme === Theme.dark
 
@@ -531,7 +536,7 @@ const CodeBlock: any = memo(({ inline, className, children = '', ...props }: any
     echartsEvents,
   ])
 
-  if (inline || !match)
+  if (!isBlockCode)
     return (
       <code {...props} className={className}>
         {children}
