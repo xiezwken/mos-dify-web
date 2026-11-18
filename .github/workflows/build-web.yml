@@ -1,4 +1,4 @@
-name: Build dify-web → GHCR (沐宸MOS CIBUILD-01 / v23)
+name: Build dify-web → GHCR (沐宸MOS CIBUILD-01 / v24)
 
 # WP-C3 · 施工席·沐言 · 2026-10-13
 # 用途：GitHub Actions 免费 runner 构建 Dify web 前端镜像，推 GHCR 私有仓
@@ -15,6 +15,7 @@ on:
       - mos-ui-v21
       - mos-ui-v22
       - mos-ui-v23
+      - mos-ui-v24
     paths:
       - 'web/**'
       - '.github/workflows/build-web.yml'
@@ -56,7 +57,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/dify-web
           tags: |
-            type=raw,value=1.16.1-mos-ui-v23
+            type=raw,value=1.16.1-mos-ui-v24
             type=sha,prefix=
 
       - name: Build and push
