@@ -2,24 +2,26 @@ import type { FC } from 'react'
 import { cn } from '@langgenius/dify-ui/cn'
 import { useEffect, useState } from 'react'
 
-// ===== 席位心跳灯（忙闲四态常驻条 v1.1 · LAMP-BUSY-20261118-B）=====
-// 语义升版：由「心跳健康」改为「忙闲」——绿=在跑、灰=空闲（沐宸 2026-11-18 裁定，苏沐 v1.1 规格）
-// 数据源：GET http://localhost:28895/api/seat_heartbeat（seat_heartbeat_server.py v1.1）
+// ===== 席位心跳灯（忙闲三态常驻条 v1.2 · LAMP-V12-20261118-DE）=====
+// v1.2 裁撤黄态：OC 空闲不打心跳，干完活 30 分钟后会误亮黄点——
+//   黄态无法区分「活着但闲」与「半死」，故删除；席位存活以接口可达性为准（404/超时即「数据源未接通」）。
+// v1.2 文案：圆点＋「施工席·<seat>」，四态文字缀于席名之后（为后续多施工席并入预留）。
+// 数据源：GET http://localhost:28895/api/seat_heartbeat（seat_heartbeat_server.py v1.1，未改动）
 // 响应约定：{ seat, last_heartbeat(ISO), status, busy(boolean), current_task?, busy_since? }
 // 四态：
-//   绿 = busy=true 且距最新打点 ≤30 分钟 → 「在跑·<当前任务名>」
-//   灰 = busy=false（且未休眠）        → 「空闲」
-//   黄 = 最新心跳距今 >30 分钟          → 「休眠」
-//   红 = busy=true 且距最新打点 >30 分钟 → 「在跑超时」
-//   接口 404／超时／结构不符            → 灰点 +「数据源未接通」
-// 点击：跳 OC 状态看板（http://localhost:8088/台账/OC状态看板.html）——4096 网页版已退役（OC-RETIRED-20261118-C）
+//   红 = busy=true 且距最新打点 >30 分钟 → 「施工席·<seat>·在跑超时」
+//   绿 = busy=true 且距最新打点 ≤30 分钟 → 「施工席·<seat>·在跑·<当前任务名>」
+//   灰 = busy=false（不论打点多久）        → 「施工席·<seat>·空闲」
+//   灰 = 接口 404／超时／结构不符           → 「数据源未接通」
+// 点击：跳 OC 状态看板（http://localhost:8088/台账/OC状态看板.html）
 // 挂载：chat 输入区，与 resident-bar.tsx 的 ResidentBar 同层相邻（输入框上方）
 const SEAT_HEARTBEAT_URL = 'http://localhost:28895/api/seat_heartbeat'
 const OC_BOARD_URL = 'http://localhost:8088/台账/OC状态看板.html'
 const POLL_INTERVAL_MS = 60 * 1000
-const STALE_MAX_MS = 30 * 60 * 1000 // 最新打点距今 >30 分钟 = 休眠／在跑超时
+const STALE_MAX_MS = 30 * 60 * 1000 // 在跑且打点距今 >30 分钟 = 在跑超时
+const SEAT_PREFIX = '施工席·'
 
-type LampColor = 'green' | 'yellow' | 'red' | 'gray'
+type LampColor = 'green' | 'red' | 'gray'
 
 interface SeatHeartbeatPayload {
   seat: string
@@ -62,29 +64,26 @@ function computeLampView(payload: SeatHeartbeatPayload, now: number): LampView {
 
   const ageMinutes = Math.round(Math.max(0, now - heartbeatAt) / 60000)
   const stale = now - heartbeatAt > STALE_MAX_MS
+  const seatLabel = `${SEAT_PREFIX}${payload.seat.trim() || '未署名'}`
   const task = (payload.current_task || '').trim()
-  const taskLabel = task || payload.seat.trim() || '未署名任务'
+  const taskLabel = task || '未署名任务'
 
-  // 红：忙着但打点已超 30 分钟（疑卡死）
+  // 红：在跑且打点超 30 分钟（疑卡死）
   if (payload.busy && stale)
-    return { color: 'red', label: '在跑超时', detail: `在跑但最新打点距今 ${ageMinutes} 分钟（阈值 30）·任务 ${taskLabel}` }
-
-  // 黄：空闲且打点超 30 分钟（休眠）
-  if (!payload.busy && stale)
-    return { color: 'yellow', label: '休眠', detail: `无作业且最新打点距今 ${ageMinutes} 分钟（阈值 30）·最近状态 ${payload.status || '未标注'}` }
+    return { color: 'red', label: `${seatLabel}·在跑超时`, detail: `在跑但最新打点距今 ${ageMinutes} 分钟（阈值 30）·任务 ${taskLabel}` }
 
   // 绿：在跑且打点新鲜
   if (payload.busy)
-    return { color: 'green', label: `在跑·${taskLabel}`, detail: `在跑（打点距今 ${ageMinutes} 分钟）·起于 ${payload.busy_since || '未标注'}·最近状态 ${payload.status || '未标注'}` }
+    return { color: 'green', label: `${seatLabel}·在跑·${taskLabel}`, detail: `在跑（打点距今 ${ageMinutes} 分钟）·起于 ${payload.busy_since || '未标注'}·最近状态 ${payload.status || '未标注'}` }
 
-  // 灰：空闲
-  return { color: 'gray', label: '空闲', detail: `空闲（最近打点距今 ${ageMinutes} 分钟）·最近状态 ${payload.status || '未标注'}` }
+  // 灰：空闲（不论打点距今多久——空闲不打心跳属正常，不再判黄态）
+  return { color: 'gray', label: `${seatLabel}·空闲`, detail: `空闲（最近打点距今 ${ageMinutes} 分钟）·最近状态 ${payload.status || '未标注'}` }
 }
 
 /**
- * 席位心跳灯（忙闲版 v1.1）：细条常驻输入框上方，高 24px（h-6），内容＝状态圆点＋状态文字。
+ * 席位心跳灯（忙闲三态 v1.2）：细条常驻输入框上方，高 24px（h-6），内容＝状态圆点＋「施工席·<seat>」＋状态文字。
  * 点击整条＝新开窗口打开 OC 状态看板（http://localhost:8088/台账/OC状态看板.html）。
- * 四态：绿（在跑）／灰（空闲）／黄（休眠，>30min 无打点）／红（在跑超时，busy 且 >30min）。
+ * 三态：绿（在跑）／红（在跑超时）／灰（空闲或数据源未接通）。
  */
 export const SeatHeartbeatLamp: FC = () => {
   const [view, setView] = useState<LampView>(GRAY_VIEW)
@@ -126,7 +125,6 @@ export const SeatHeartbeatLamp: FC = () => {
 
   const dotCls: Record<LampColor, string> = {
     green: 'bg-green-500',
-    yellow: 'bg-amber-500',
     red: 'bg-red-500',
     gray: 'bg-gray-400',
   }
