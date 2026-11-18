@@ -2,24 +2,30 @@ import type { FC } from 'react'
 import { cn } from '@langgenius/dify-ui/cn'
 import { useEffect, useState } from 'react'
 
-// ===== 席位心跳灯（忙闲三态常驻条 v1.2 · LAMP-V12-20261118-DE）=====
-// v1.2 裁撤黄态：OC 空闲不打心跳，干完活 30 分钟后会误亮黄点——
-//   黄态无法区分「活着但闲」与「半死」，故删除；席位存活以接口可达性为准（404/超时即「数据源未接通」）。
-// v1.2 文案：圆点＋「施工席·<seat>」，四态文字缀于席名之后（为后续多施工席并入预留）。
-// 数据源：GET http://localhost:28895/api/seat_heartbeat（seat_heartbeat_server.py v1.1，未改动）
-// 响应约定：{ seat, last_heartbeat(ISO), status, busy(boolean), current_task?, busy_since? }
-// 四态：
-//   红 = busy=true 且距最新打点 >30 分钟 → 「施工席·<seat>·在跑超时」
-//   绿 = busy=true 且距最新打点 ≤30 分钟 → 「施工席·<seat>·在跑·<当前任务名>」
-//   灰 = busy=false（不论打点多久）        → 「施工席·<seat>·空闲」
-//   灰 = 接口 404／超时／结构不符           → 「数据源未接通」
+// ===== 席位灯条（合一版 v1.3 · LAMP-V13-20261118-F）=====
+// 沐宸钦定：对话页只保留一行灯条（旧「施工席：空闲」条已从 resident-bar 摘除）。
+// 行格式：`施工席：` ＋ 灯点 ＋ 终端显示名（seat 值经前端映射表显示，OC → OpenCode）。
+// 显示口径（灯色即状态，空闲不缀状态词）：
+//   空闲（busy=false）        → 灰点 ＋ OpenCode
+//   在跑（busy=true，≤30min）  → 绿点 ＋ OpenCode ＋ 当前任务名
+//   在跑超时（busy，>30min）   → 红点 ＋ OpenCode ＋ 超时
+//   接口 404／超时／结构不符    → 灰点 ＋ OpenCode ＋ 数据源未接通
+// 数据源：GET http://localhost:28895/api/seat_heartbeat（seat_heartbeat_server.py v1.1，本令未改）
 // 点击：跳 OC 状态看板（http://localhost:8088/台账/OC状态看板.html）
-// 挂载：chat 输入区，与 resident-bar.tsx 的 ResidentBar 同层相邻（输入框上方）
+// 多席并排：行内容器为 flex 横排，items 现为 1 席（seats 数组），后续增席仅需扩充数组，后端接口不动。
 const SEAT_HEARTBEAT_URL = 'http://localhost:28895/api/seat_heartbeat'
 const OC_BOARD_URL = 'http://localhost:8088/台账/OC状态看板.html'
 const POLL_INTERVAL_MS = 60 * 1000
-const STALE_MAX_MS = 30 * 60 * 1000 // 在跑且打点距今 >30 分钟 = 在跑超时
-const SEAT_PREFIX = '施工席·'
+const STALE_MAX_MS = 30 * 60 * 1000 // 在跑且打点距今 >30 分钟 = 超时
+const ROW_PREFIX = '施工席：'
+const GAP_CLASS = 'gap-2' // 8px：前缀↔灯点、点↔名、多席条目之间统一加宽
+
+// 终端显示名映射（前端写死；新增席位在此登记，未知 key 回落原值）
+const SEAT_DISPLAY: Record<string, string> = {
+  OC: 'OpenCode',
+}
+const FALLBACK_SEAT_KEY = 'OC'
+const FALLBACK_SEAT_NAME = 'OpenCode'
 
 type LampColor = 'green' | 'red' | 'gray'
 
@@ -32,16 +38,20 @@ interface SeatHeartbeatPayload {
   busy_since?: string | null
 }
 
-interface LampView {
+interface SeatView {
+  key: string
   color: LampColor
-  label: string
+  name: string
+  suffix: string // '' 表示不缀任何状态词（空闲）
   detail: string
 }
 
-// 灰态降级：接口 404／超时／响应结构不符／时间戳不可解析，一律「数据源未接通」
-const GRAY_VIEW: LampView = {
+// 降级态：接口 404／超时／结构不符／时间戳不可解析
+const OFFLINE_VIEW: SeatView = {
+  key: FALLBACK_SEAT_KEY,
   color: 'gray',
-  label: '数据源未接通',
+  name: FALLBACK_SEAT_NAME,
+  suffix: '数据源未接通',
   detail: '心跳接口不可达（404／超时／数据不可解析）',
 }
 
@@ -57,36 +67,35 @@ function isSeatHeartbeatPayload(value: unknown): value is SeatHeartbeatPayload {
   )
 }
 
-function computeLampView(payload: SeatHeartbeatPayload, now: number): LampView {
+function computeSeatView(payload: SeatHeartbeatPayload, now: number): SeatView {
   const heartbeatAt = Date.parse(payload.last_heartbeat)
   if (Number.isNaN(heartbeatAt))
-    return GRAY_VIEW
+    return OFFLINE_VIEW
 
+  const seatKey = (payload.seat || '').trim() || FALLBACK_SEAT_KEY
+  const name = SEAT_DISPLAY[seatKey] || seatKey
   const ageMinutes = Math.round(Math.max(0, now - heartbeatAt) / 60000)
   const stale = now - heartbeatAt > STALE_MAX_MS
-  const seatLabel = `${SEAT_PREFIX}${payload.seat.trim() || '未署名'}`
   const task = (payload.current_task || '').trim()
-  const taskLabel = task || '未署名任务'
 
-  // 红：在跑且打点超 30 分钟（疑卡死）
+  // 红：在跑且打点超 30 分钟 → 名字后缀「超时」
   if (payload.busy && stale)
-    return { color: 'red', label: `${seatLabel}·在跑超时`, detail: `在跑但最新打点距今 ${ageMinutes} 分钟（阈值 30）·任务 ${taskLabel}` }
+    return { key: seatKey, color: 'red', name, suffix: '超时', detail: `在跑但最新打点距今 ${ageMinutes} 分钟（阈值 30）·任务 ${task || '未署名任务'}` }
 
-  // 绿：在跑且打点新鲜
+  // 绿：在跑且打点新鲜 → 名字后接当前任务名
   if (payload.busy)
-    return { color: 'green', label: `${seatLabel}·在跑·${taskLabel}`, detail: `在跑（打点距今 ${ageMinutes} 分钟）·起于 ${payload.busy_since || '未标注'}·最近状态 ${payload.status || '未标注'}` }
+    return { key: seatKey, color: 'green', name, suffix: task || '未署名任务', detail: `在跑（打点距今 ${ageMinutes} 分钟）·起于 ${payload.busy_since || '未标注'}·最近状态 ${payload.status || '未标注'}` }
 
-  // 灰：空闲（不论打点距今多久——空闲不打心跳属正常，不再判黄态）
-  return { color: 'gray', label: `${seatLabel}·空闲`, detail: `空闲（最近打点距今 ${ageMinutes} 分钟）·最近状态 ${payload.status || '未标注'}` }
+  // 灰：空闲（不缀任何状态词）
+  return { key: seatKey, color: 'gray', name, suffix: '', detail: `空闲（最近打点距今 ${ageMinutes} 分钟）·最近状态 ${payload.status || '未标注'}` }
 }
 
 /**
- * 席位心跳灯（忙闲三态 v1.2）：细条常驻输入框上方，高 24px（h-6），内容＝状态圆点＋「施工席·<seat>」＋状态文字。
+ * 席位灯条（合一版 v1.3）：`施工席：● OpenCode[ 状态]`，常驻输入框上方，高 24px（h-6）。
  * 点击整条＝新开窗口打开 OC 状态看板（http://localhost:8088/台账/OC状态看板.html）。
- * 三态：绿（在跑）／红（在跑超时）／灰（空闲或数据源未接通）。
  */
 export const SeatHeartbeatLamp: FC = () => {
-  const [view, setView] = useState<LampView>(GRAY_VIEW)
+  const [view, setView] = useState<SeatView>(OFFLINE_VIEW)
 
   // 60 秒轮询一次；组件卸载时置 cancelled 并清理定时器
   useEffect(() => {
@@ -99,17 +108,17 @@ export const SeatHeartbeatLamp: FC = () => {
         if (cancelled)
           return
         if (!res.ok) {
-          setView(GRAY_VIEW)
+          setView(OFFLINE_VIEW)
           return
         }
         const data: unknown = await res.json()
         if (cancelled)
           return
-        setView(isSeatHeartbeatPayload(data) ? computeLampView(data, Date.now()) : GRAY_VIEW)
+        setView(isSeatHeartbeatPayload(data) ? computeSeatView(data, Date.now()) : OFFLINE_VIEW)
       }
       catch {
         if (!cancelled)
-          setView(GRAY_VIEW)
+          setView(OFFLINE_VIEW)
       }
     }
 
@@ -129,6 +138,9 @@ export const SeatHeartbeatLamp: FC = () => {
     gray: 'bg-gray-400',
   }
 
+  // 多席并排预留：当前仅 1 席；后续 `[...views]` 横排即可，后端接口不动
+  const seats: SeatView[] = [view]
+
   const handleLampClick = () => {
     window.open(encodeURI(OC_BOARD_URL), '_blank')
   }
@@ -138,12 +150,23 @@ export const SeatHeartbeatLamp: FC = () => {
       type="button"
       data-testid="mos-seat-heartbeat-lamp"
       onClick={handleLampClick}
-      title={view.detail}
-      aria-label={`${view.label}（点击打开 OC 状态看板）`}
-      className="pointer-events-auto flex h-6 w-full select-none items-center gap-1.5 px-4 text-xs text-text-secondary"
+      title={seats.map(s => s.detail).join(' / ')}
+      aria-label={`${ROW_PREFIX}${seats.map(s => `${s.name}${s.suffix ? ` ${s.suffix}` : ''}`).join('，')}（点击打开 OC 状态看板）`}
+      className={cn(
+        'pointer-events-auto flex h-6 w-full select-none items-center px-4 text-xs text-text-secondary',
+        GAP_CLASS,
+      )}
     >
-      <span className={cn('inline-block size-2 shrink-0 rounded-full', dotCls[view.color])} />
-      <span className="truncate">{view.label}</span>
+      <span className="shrink-0">{ROW_PREFIX}</span>
+      <span className={cn('flex min-w-0 items-center', GAP_CLASS)}>
+        {seats.map(seat => (
+          <span key={seat.key} className={cn('flex min-w-0 items-center', GAP_CLASS)}>
+            <span className={cn('inline-block size-2 shrink-0 rounded-full', dotCls[seat.color])} />
+            <span className="shrink-0 font-medium text-text-primary">{seat.name}</span>
+            {seat.suffix && <span className="truncate">{seat.suffix}</span>}
+          </span>
+        ))}
+      </span>
     </button>
   )
 }
