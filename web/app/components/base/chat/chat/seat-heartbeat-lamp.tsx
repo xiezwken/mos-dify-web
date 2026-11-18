@@ -18,7 +18,8 @@ const OC_BOARD_URL = 'http://localhost:8088/台账/OC状态看板.html'
 const POLL_INTERVAL_MS = 60 * 1000
 const STALE_MAX_MS = 30 * 60 * 1000 // 在跑且打点距今 >30 分钟 = 超时
 const ROW_PREFIX = '施工席：'
-const GAP_CLASS = 'gap-2' // 8px：前缀↔灯点、点↔名、多席条目之间统一加宽
+const GAP_CLASS = 'gap-2' // 8px：前缀↔灯点、多席条目之间统一加宽
+const DOT_NAME_GAP = 'gap-1' // 4px：灯点↔席名（LAMP-V13F-20261118-G 收紧）
 
 // 终端显示名映射（前端写死；新增席位在此登记，未知 key 回落原值）
 const SEAT_DISPLAY: Record<string, string> = {
@@ -160,7 +161,7 @@ export const SeatHeartbeatLamp: FC = () => {
       <span className="shrink-0">{ROW_PREFIX}</span>
       <span className={cn('flex min-w-0 items-center', GAP_CLASS)}>
         {seats.map(seat => (
-          <span key={seat.key} className={cn('flex min-w-0 items-center', GAP_CLASS)}>
+          <span key={seat.key} className={cn('flex min-w-0 items-center', DOT_NAME_GAP)}>
             <span className={cn('inline-block size-2 shrink-0 rounded-full', dotCls[seat.color])} />
             <span className="shrink-0 font-medium text-text-primary">{seat.name}</span>
             {seat.suffix && <span className="truncate">{seat.suffix}</span>}
