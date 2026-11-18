@@ -18,6 +18,7 @@ import ErrorBoundary from '@/app/components/base/error-boundary'
 import Answer from './answer'
 import ChatInputArea from './chat-input-area'
 import ResidentBar from './resident-bar'
+import SeatHeartbeatLamp from './seat-heartbeat-lamp'
 import ChatLogModals from './chat-log-modals'
 import { ChatContextProvider } from './context-provider'
 import Question from './question'
@@ -322,6 +323,7 @@ const Chat: FC<ChatProps> = ({
             )}
             {hasTryToAsk && <TryToAsk suggestedQuestions={suggestedQuestions} onSend={onSend} />}
             <ResidentBar chatList={chatList} />
+            <SeatHeartbeatLamp />
             {!noChatInput && (
               <ChatInputArea
                 botName={inputPlaceholderBotName || appData?.site?.title || 'Bot'}
