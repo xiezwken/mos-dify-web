@@ -3,10 +3,10 @@ import { cn } from '@langgenius/dify-ui/cn'
 import { useEffect, useState } from 'react'
 
 // ===== 席位心跳灯（四态常驻条·LAMP-3STATE-20261118-A）=====
-// 数据源：GET http://localhost:28894/api/seat_heartbeat
+// 数据源：GET http://localhost:28895/api/seat_heartbeat（LAMP-GO2-20261118-C 改向；原端口为 opencode-cli 鉴权服务、不可扩展）
 // 响应约定：{ seat: string; last_heartbeat: string(ISO); status: string }
 // 挂载：chat 输入区，与 resident-bar.tsx 的 ResidentBar 同层相邻（输入框上方）
-const SEAT_HEARTBEAT_URL = 'http://localhost:28894/api/seat_heartbeat'
+const SEAT_HEARTBEAT_URL = 'http://localhost:28895/api/seat_heartbeat'
 const OC_CONSOLE_URL = 'http://localhost:4096'
 const POLL_INTERVAL_MS = 60 * 1000
 const GREEN_MAX_MS = 15 * 60 * 1000 // 心跳距今 <15 分钟 = 绿
