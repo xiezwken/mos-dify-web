@@ -26,6 +26,19 @@ export type SendQueueEntry = {
   content: string
   files: SerializedFile[]
   conversationId: string
+  /** PROD-BUBBLE-01：条目唯一键（出队按 uid 精确删除，避免误删同文条目） */
+  uid?: string
+  /** PROD-BUBBLE-01：发送失败次数（失败留队，退避重试，防热循环） */
+  failCount?: number
+  /** PROD-BUBBLE-01：下次可重试时刻（毫秒时间戳） */
+  nextRetryAt?: number
+}
+
+const makeUid = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+
+const ensureUid = (entry: SendQueueEntry): SendQueueEntry => {
+  if (!entry.uid) entry.uid = makeUid()
+  return entry
 }
 
 export const serializeFiles = (files: FileEntity[]): SerializedFile[] =>
@@ -84,7 +97,7 @@ export const readSendQueue = (): SendQueueEntry[] => {
     if (!Array.isArray(parsed)) return []
     return parsed.filter(
       item => item && typeof item.content === 'string' && Array.isArray(item.files),
-    ) as SendQueueEntry[]
+    ).map(ensureUid) as SendQueueEntry[]
   }
   catch {
     return []
@@ -139,9 +152,41 @@ export const clearSendQueueForConversation = (conversationId: string): number =>
 
 export const enqueueSend = (entry: SendQueueEntry): SendQueueEntry[] => {
   const queue = readSendQueue()
-  queue.push(entry)
+  queue.push(ensureUid(entry))
   writeSendQueue(queue)
   return queue
+}
+
+/** PROD-BUBBLE-01：只窥队首不删除；发送成功后才按 uid 出队 */
+export const peekSendQueueForConversation = (conversationId: string): SendQueueEntry | null => {
+  const queue = readSendQueue()
+  const current = conversationId || ''
+  return queue.find(item => item.conversationId === current || item.conversationId === '') ?? null
+}
+
+/** PROD-BUBBLE-01：按 uid 精确出队（发送已受理后调用） */
+export const removeSendQueueEntryByUid = (uid: string): SendQueueEntry[] => {
+  if (!uid) return readSendQueue()
+  const queue = readSendQueue()
+  const index = queue.findIndex(item => item.uid === uid)
+  if (index >= 0) {
+    queue.splice(index, 1)
+    writeSendQueue(queue)
+  }
+  return queue
+}
+
+/** PROD-BUBBLE-01：发送失败留队——原地记失败次数与退避时刻，不删除条目 */
+export const markSendQueueEntryFailed = (uid: string, backoffMs = 5000): SendQueueEntry | null => {
+  if (!uid) return null
+  const queue = readSendQueue()
+  const index = queue.findIndex(item => item.uid === uid)
+  if (index < 0) return null
+  const entry = queue[index]
+  entry.failCount = (entry.failCount || 0) + 1
+  entry.nextRetryAt = Date.now() + backoffMs
+  writeSendQueue(queue)
+  return entry
 }
 
 export const dequeueForConversation = (conversationId: string): SendQueueEntry | null => {

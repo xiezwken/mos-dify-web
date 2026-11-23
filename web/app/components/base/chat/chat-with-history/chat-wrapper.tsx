@@ -29,11 +29,11 @@ import Chat from '../chat'
 import { useChat } from '../chat/hooks'
 import { getInFlightByServerId } from '../chat/in-flight-store'
 import {
-  clearSendQueue,
   deserializeFiles,
-  dequeueForConversation,
-  enqueueSend,
   getUnsendableFiles,
+  markSendQueueEntryFailed,
+  peekSendQueueForConversation,
+  removeSendQueueEntryByUid,
 } from '../chat/mos-send-queue'
 import { getLastAnswer, isValidGeneratedAnswer } from '../utils'
 import { useChatWithHistoryContext } from './context'
@@ -299,24 +299,38 @@ const ChatWrapper = () => {
     const forceStale = trigger === 'interval' && staleResponse
     if (respondingRef.current && !forceStale) return
     if (!forceStale && getInFlightByServerId(currentId)?.isResponding) return
-    const entry = dequeueForConversation(currentId)
+    const entry = peekSendQueueForConversation(currentId)
     if (!entry) return
-    // 刀5d：附件未就绪时不带病重发，原条目退回队尾等待下一次触发
+    // PROD-BUBBLE-01：上一轮失败退避未到期则等下一触发点，不空转
+    if (entry.nextRetryAt && Date.now() < entry.nextRetryAt) return
+    // 刀5d：附件未就绪时不带病重发，原条目留在队列等下一次触发
     const unsendable = getUnsendableFiles(entry.files)
     if (unsendable.length > 0) {
-      enqueueSend(entry)
+      markSendQueueEntryFailed(entry.uid || '', 30000)
       toast.info(`排队消息有 ${unsendable.length} 个附件未就绪，已保留在队列中`)
       return
     }
     drainingRef.current = true
     try {
-      Promise.resolve(doSendRef.current(entry.content, deserializeFiles(entry.files)))
-        .catch(() => {})
+      const sent = doSendRef.current(entry.content, deserializeFiles(entry.files))
+      // PROD-BUBBLE-01：发送受理后才按 uid 出队；发送抛错/被拒则留队退避，不再静默丢件
+      void Promise.resolve(sent)
+        .then(() => {
+          if (entry.uid) removeSendQueueEntryByUid(entry.uid)
+        }, () => {
+          if (entry.uid) markSendQueueEntryFailed(entry.uid)
+        })
+        .catch(() => {
+          if (entry.uid) markSendQueueEntryFailed(entry.uid)
+        })
         .finally(() => {
           drainingRef.current = false
         })
     }
     catch {
+      // 同步抛错＝发送未被受理，条目原样留队
+      if (entry.uid) markSendQueueEntryFailed(entry.uid)
+      toast.info('排队消息发送失败，已保留在队列中，稍后自动重试')
       drainingRef.current = false
     }
   }, [])
@@ -337,8 +351,7 @@ const ChatWrapper = () => {
     return () => clearInterval(timer)
   }, [drainSendQueue])
   const handleStopWithQueue = useCallback(() => {
-    const cleared = clearSendQueue()
-    if (cleared > 0) toast.info(`已清空${cleared}条排队`)
+    // PROD-BUBBLE-01：停止只停本轮在飞流，不再清空排队（清空只留"清空排队"按钮显式触发）
     handleStop()
   }, [handleStop])
 
