@@ -33,6 +33,8 @@ export type ChatWithHistoryContextValue = {
   handleNewConversationCompleted: (newConversationId: string) => void
   /** P-1：首条消息拿到 conversationId 时立即登记会话条目（不等流完成） */
   handleConversationStarted: (conversationId: string) => void
+  /** QUEUE-20261123-01：新会话首包已拿到的会话 id（首答未完成前 currentConversationId 仍为空） */
+  newConversationId: string
   chatShouldReloadKey: string
   isMobile: boolean
   isInstalledApp: boolean
@@ -76,6 +78,7 @@ export const ChatWithHistoryContext = createContext<ChatWithHistoryContextValue>
   handleRenameConversation: noop,
   handleNewConversationCompleted: noop,
   handleConversationStarted: noop,
+  newConversationId: '',
   chatShouldReloadKey: '',
   isMobile: false,
   isInstalledApp: false,

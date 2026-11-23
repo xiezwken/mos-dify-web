@@ -71,6 +71,7 @@ const ChatWrapper = () => {
     initUserVariables,
     isNewAgent,
     renderAgentContent,
+    newConversationId,
   } = useChatWithHistoryContext()
 
   const appSourceType = isInstalledApp ? AppSourceType.installedApp : AppSourceType.webApp
@@ -273,6 +274,8 @@ const ChatWrapper = () => {
   // 刀5：当前流完成后 1s（≥1s 且 ≤5s）按序自动发出排队消息
   const doSendRef = useRef(doSend)
   const conversationIdRef = useRef(currentConversationId)
+  // QUEUE-20261123-01：新会话首答未完成时 currentConversationId 恒为空，需并认首包拿到的会话 id
+  const newConversationIdRef = useRef(newConversationId)
   const respondingRef = useRef(respondingState)
   const drainingRef = useRef(false)
   const lastResponseActivityRef = useRef(Date.now())
@@ -283,24 +286,33 @@ const ChatWrapper = () => {
     conversationIdRef.current = currentConversationId
   }, [currentConversationId])
   useEffect(() => {
+    newConversationIdRef.current = newConversationId
+  }, [newConversationId])
+  useEffect(() => {
     respondingRef.current = respondingState
     if (respondingState) lastResponseActivityRef.current = Date.now()
   }, [respondingState, chatList])
 
   const drainSendQueue = useCallback((trigger: 'edge' | 'interval' = 'edge') => {
     if (typeof window === 'undefined') return
-    const currentId = conversationIdRef.current || ''
-    // 无会话 id 不发，避免新建错误会话（沿用刀5既有闸）
-    if (!currentId || drainingRef.current) return
+    // QUEUE-20261123-01：生效会话 id＝已落定会话 || 本会话首包已拿到的新会话 id
+    // （新会话首答被中途停止时 currentConversationId 恒空，旧闸会把整类场景锁死）
+    const currentId = conversationIdRef.current || newConversationIdRef.current || ''
+    if (drainingRef.current) return
+    // QUEUE-20261123-01：先窥队，无排队条目即返回，不空转
+    const entry = peekSendQueueForConversation(currentId)
+    if (!entry) return
+    // 无会话 id 且条目也未带会话 id＝无可归属会话，仍不发（沿用刀5既有闸，避免新建错误会话）
+    if (!currentId && !entry.conversationId) return
     // 响应卡死：仅定时兜底、同一会话且确无消息增量时，才允许越过 responding／在飞闸；
     // 正常长响应只要仍有增量即不会被越过
     const staleResponse = respondingRef.current
       && Date.now() - lastResponseActivityRef.current >= QUEUE_STALE_RESPONSE_MS
     const forceStale = trigger === 'interval' && staleResponse
-    if (respondingRef.current && !forceStale) return
-    if (!forceStale && getInFlightByServerId(currentId)?.isResponding) return
-    const entry = peekSendQueueForConversation(currentId)
-    if (!entry) return
+    // QUEUE-20261123-01：自查扩容——"队列非空且无在飞项"（停止/断流后的空闲态）即触发补发
+    const queueIdle = trigger === 'interval' && !getInFlightByServerId(currentId)?.isResponding
+    if (respondingRef.current && !forceStale && !queueIdle) return
+    if (!forceStale && !queueIdle && getInFlightByServerId(currentId)?.isResponding) return
     // PROD-BUBBLE-01：上一轮失败退避未到期则等下一触发点，不空转
     if (entry.nextRetryAt && Date.now() < entry.nextRetryAt) return
     // 刀5d：附件未就绪时不带病重发，原条目留在队列等下一次触发
@@ -314,8 +326,13 @@ const ChatWrapper = () => {
     try {
       const sent = doSendRef.current(entry.content, deserializeFiles(entry.files))
       // PROD-BUBBLE-01：发送受理后才按 uid 出队；发送抛错/被拒则留队退避，不再静默丢件
+      // QUEUE-20261123-01：handleSend 以 false 表示"未受理（仍判定在响应）"，该分支必须留队
       void Promise.resolve(sent)
-        .then(() => {
+        .then((accepted) => {
+          if (accepted === false) {
+            if (entry.uid) markSendQueueEntryFailed(entry.uid, QUEUE_FALLBACK_INTERVAL_MS)
+            return
+          }
           if (entry.uid) removeSendQueueEntryByUid(entry.uid)
         }, () => {
           if (entry.uid) markSendQueueEntryFailed(entry.uid)
