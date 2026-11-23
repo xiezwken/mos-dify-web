@@ -374,8 +374,13 @@ const ChatWrapper = () => {
     const timer = setInterval(() => drainSendQueue('interval'), QUEUE_FALLBACK_INTERVAL_MS)
     return () => clearInterval(timer)
   }, [drainSendQueue])
-  // QUEUE-20261123-01：挂载即自查一次——会话切换/新会话落地后不空等下一个 30s 窗口
+  // QUEUE-20261123-01：挂载即自查一次——会话切换/新会话落地后不空等下一个 30s 窗口；
+  // 只认显式归属本会话的条目，通配条目不在挂载时越会话补发（防切会话误发到别的会话）
   useEffect(() => {
+    const currentId = conversationIdRef.current || newConversationIdRef.current || ''
+    const entry = peekSendQueueForConversation(currentId)
+    if (!entry || !entry.conversationId)
+      return
     drainSendQueue('edge')
   }, [drainSendQueue])
   const handleStopWithQueue = useCallback(() => {
