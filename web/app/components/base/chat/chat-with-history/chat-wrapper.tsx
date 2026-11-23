@@ -374,6 +374,10 @@ const ChatWrapper = () => {
     const timer = setInterval(() => drainSendQueue('interval'), QUEUE_FALLBACK_INTERVAL_MS)
     return () => clearInterval(timer)
   }, [drainSendQueue])
+  // QUEUE-20261123-01：挂载即自查一次——会话切换/新会话落地后不空等下一个 30s 窗口
+  useEffect(() => {
+    drainSendQueue('edge')
+  }, [drainSendQueue])
   const handleStopWithQueue = useCallback(() => {
     // PROD-BUBBLE-01：停止只停本轮在飞流，不再清空排队（清空只留"清空排队"按钮显式触发）
     handleStop()
