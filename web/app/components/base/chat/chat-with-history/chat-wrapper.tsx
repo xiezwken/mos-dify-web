@@ -239,7 +239,9 @@ const ChatWrapper = () => {
         parent_message_id: (isRegenerate ? parentAnswer?.id : getLastAnswer(chatList)?.id) || null,
       }
 
-      handleSend(getUrl('chat-messages', appSourceType, appId || ''), data, {
+      // QUEUE-20261123-01：回吐受理结果（boolean/抛错），供排队补发方判"受理才出队"；
+      // 原先此处丢弃返回值，补发方拿到 undefined 会把"被拒收"误判成"已受理"
+      const accepted = handleSend(getUrl('chat-messages', appSourceType, appId || ''), data, {
         onGetConversationMessages: isNewAgent
           ? (conversationId) => fetchChatList(conversationId, appSourceType, appId)
           : undefined,
@@ -253,6 +255,7 @@ const ChatWrapper = () => {
       const appMode = isNewAgent ? 'agent-v2' : appData?.mode
       if (appSourceType === AppSourceType.webApp && appMode)
         trackEvent('webapp_run', { app_mode: appMode })
+      return accepted
     },
     [
       inputsForms,
@@ -309,10 +312,10 @@ const ChatWrapper = () => {
     const staleResponse = respondingRef.current
       && Date.now() - lastResponseActivityRef.current >= QUEUE_STALE_RESPONSE_MS
     const forceStale = trigger === 'interval' && staleResponse
-    // QUEUE-20261123-01：自查扩容——"队列非空且无在飞项"（停止/断流后的空闲态）即触发补发
-    const queueIdle = trigger === 'interval' && !getInFlightByServerId(currentId)?.isResponding
-    if (respondingRef.current && !forceStale && !queueIdle) return
-    if (!forceStale && !queueIdle && getInFlightByServerId(currentId)?.isResponding) return
+    // QUEUE-20261123-01：30s 自查扩容——"队列非空且无在飞项"（停止/断流后的空闲态）即补发，
+    // 与原"响应卡死"并列；响应中一律不越闸（越闸重发会被 handleSend 拒收，条目须留队）
+    if (respondingRef.current && !forceStale) return
+    if (!forceStale && getInFlightByServerId(currentId)?.isResponding) return
     // PROD-BUBBLE-01：上一轮失败退避未到期则等下一触发点，不空转
     if (entry.nextRetryAt && Date.now() < entry.nextRetryAt) return
     // 刀5d：附件未就绪时不带病重发，原条目留在队列等下一次触发
