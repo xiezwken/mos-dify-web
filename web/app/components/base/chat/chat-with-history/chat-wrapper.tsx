@@ -228,6 +228,9 @@ const ChatWrapper = () => {
   const doSend: OnSend = useCallback(
     (message, files, isRegenerate = false, parentAnswer: ChatItem | null = null) => {
       if (!currentConversationId) setHasSent(true)
+      // QUEUE-20261123-01：新会话首答未完成时 currentConversationId 恒空，须并认首包会话 id，
+      // 否则停止后补发的排队消息会另起新会话（会话被劈成两半、上下文断链）
+      const targetConversationId = currentConversationId || newConversationId || ''
       const data: any = {
         query: message,
         files,
@@ -235,7 +238,7 @@ const ChatWrapper = () => {
           inputsForms,
           currentConversationId ? currentConversationInputs : newConversationInputs,
         ),
-        conversation_id: currentConversationId,
+        conversation_id: targetConversationId,
         parent_message_id: (isRegenerate ? parentAnswer?.id : getLastAnswer(chatList)?.id) || null,
       }
 
@@ -271,6 +274,7 @@ const ChatWrapper = () => {
       handleConversationStarted,
       isNewAgent,
       appData?.mode,
+      newConversationId,
     ],
   )
 
@@ -570,7 +574,7 @@ const ChatWrapper = () => {
         speechToTextTarget={speechToTextTarget}
         chatList={messageList}
         isResponding={respondingState}
-        conversationId={currentConversationId || undefined}
+        conversationId={currentConversationId || newConversationId || undefined}
         chatContainerInnerClassName={`mx-auto pt-6 w-full max-w-[768px] ${isMobile ? 'px-4' : ''}`}
         chatFooterClassName="pb-4"
         chatFooterInnerClassName={`mx-auto w-full max-w-[768px] ${isMobile ? 'px-2' : 'px-4'}`}
